@@ -23,7 +23,7 @@ It can run without any model API key by using built-in rule coaches, so the proj
 | --- | --- |
 | ![Match overview](docs/assets/match-overview.png) | ![Match flow](docs/assets/match-flow.png) |
 
-![Kick and ball movement sequence](docs/assets/kick-sequence.gif)
+![Kick and ball movement sequence](docs/assets/kick-sequence-normal-speed.gif)
 
 ## Install
 
