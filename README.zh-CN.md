@@ -23,7 +23,7 @@ AI Football Arena 是一个本地运行的 11v11 足球比赛模拟器。两个 
 | --- | --- |
 | ![比赛总览](docs/assets/match-overview.png) | ![比赛推进](docs/assets/match-flow.png) |
 
-![踢球和球路过程](docs/assets/kick-sequence-normal-speed.gif)
+![踢球和球路过程](docs/assets/kick-sequence-real-time.gif)
 
 ## 安装
 
