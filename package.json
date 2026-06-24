@@ -1,0 +1,27 @@
+{
+  "name": "ai-football-arena",
+  "version": "1.0.0",
+  "description": "Local 11v11 AI football match simulator with model coaches, live 2D pitch, commentary, logs, and reports.",
+  "license": "MIT",
+  "type": "module",
+  "main": "server.js",
+  "keywords": [
+    "football",
+    "soccer",
+    "simulation",
+    "ai",
+    "llm",
+    "game",
+    "nodejs"
+  ],
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node -e \"console.log('No build step required. Run npm start to launch the local app.')\"",
+    "test": "node --test test/*.test.js",
+    "test:e2e-note": "node -e \"console.log('Run browser-flow checks with Playwright or Chrome DevTools MCP.')\""
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

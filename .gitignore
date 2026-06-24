@@ -1,0 +1,13 @@
+node_modules/
+config/app.json
+config/*.local.json
+secrets/
+matches/
+reports/
+cache/
+.claude/
+.playwright-mcp/
+.private/
+.publish/
+.DS_Store
+*.log

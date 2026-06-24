@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Football Arena</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2308110d'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%23f0c15d' stroke-width='6'/%3E%3Cpath d='M18 32h28M32 14v36' stroke='%2349b8ff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">AI Football Arena</div>
+      <div class="scoreboard" aria-label="比分牌">
+        <span id="homeName">主队</span>
+        <strong><span id="homeScore">0</span> - <span id="awayScore">0</span></strong>
+        <span id="awayName">客队</span>
+      </div>
+      <div class="clock"><span id="matchState">未开始</span><span id="matchTime">00:00</span></div>
+    </header>
+
+    <main class="main-grid">
+      <section class="stage-card" aria-label="比赛画面">
+        <div class="pitch-frame">
+          <aside class="broadcast-card" aria-label="实时播报">
+            <h3>实时播报</h3>
+            <div class="commentary-list" id="commentaryFeed" aria-live="polite"></div>
+          </aside>
+          <canvas id="pitchCanvas" width="1100" height="696" aria-label="2D 俯视足球场"></canvas>
+          <div class="intent-radar" aria-hidden="true"></div>
+        </div>
+        <div class="control-row">
+          <button class="btn primary" id="startBtn">开始比赛</button>
+          <button class="btn" id="pauseBtn">暂停</button>
+          <button class="btn" id="resumeBtn">恢复</button>
+          <button class="btn" id="stopBtn">停止并生成报告</button>
+          <button class="btn" id="settingsOpen">设置</button>
+          <button class="btn" id="reportBtn">打开报告</button>
+          <span class="summary" id="matchSummary">镜像阵容 · 标准 90 分钟 · 本地规则教练</span>
+        </div>
+      </section>
+
+      <aside class="coach-panel" aria-label="模型连续决策看板">
+        <section class="panel-section">
+          <h2>模型连续决策</h2>
+          <div id="coachDashboard"></div>
+        </section>
+        <section class="panel-section">
+          <h2>当前战术</h2>
+          <div id="tacticPanel" class="stack"></div>
+        </section>
+        <section class="panel-section">
+          <h2>模型统计</h2>
+          <div id="modelStats" class="stack"></div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="bottom-grid">
+      <section class="bottom-panel">
+        <h3>关键事件</h3>
+        <div class="timeline" id="eventTimeline"></div>
+      </section>
+      <section class="bottom-panel">
+        <h3>比赛数据</h3>
+        <div id="matchStats" class="stack"></div>
+      </section>
+      <section class="bottom-panel">
+        <h3>赛后输出</h3>
+        <div class="report-status" id="reportStatus">比赛结束或停止后生成 summary.md 与 report.md。</div>
+      </section>
+    </footer>
+  </div>
+
+  <div class="modal" id="settingsModal" aria-label="比赛设置" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>比赛设置</h2>
+        <button class="btn" id="settingsClose">关闭</button>
+      </div>
+      <form id="settingsForm" class="modal-body">
+        <section>
+          <h3>主队模型</h3>
+          <label>Provider<input name="homeProvider" value="local"></label>
+          <label>Model<input name="homeModel" value="rules-coach"></label>
+          <label>Endpoint<input name="homeEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
+          <label>API Key 引用<input name="homeKeyRef" placeholder="env:DEEPSEEK_API_KEY"></label>
+          <label>API Key<input name="homeApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <label>自由策略提示<input name="homePrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
+        </section>
+        <section>
+          <h3>客队模型</h3>
+          <label>Provider<input name="awayProvider" value="local"></label>
+          <label>Model<input name="awayModel" value="rules-coach"></label>
+          <label>Endpoint<input name="awayEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
+          <label>API Key 引用<input name="awayKeyRef" placeholder="env:GLM_API_KEY"></label>
+          <label>API Key<input name="awayApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <label>自由策略提示<input name="awayPrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
+        </section>
+        <section class="wide">
+          <h3>比赛与运行</h3>
+          <div class="form-grid">
+            <label>主队阵型<select name="homeFormation"><option value="">由模型决定</option></select></label>
+            <label>客队阵型<select name="awayFormation"><option value="">由模型决定</option></select></label>
+            <label>比赛时长（分钟）<input name="matchMinutes" type="number" min="1" max="90" step="1" value="90" required></label>
+            <label>随机种子<input name="seed" value="20260620"></label>
+            <label class="checkbox"><input type="checkbox" name="knockout"> 淘汰赛</label>
+          </div>
+          <div class="button-row">
+            <button class="btn primary" type="submit">保存设置</button>
+            <button class="btn" type="button" id="testHomeBtn">测试主队连接</button>
+            <button class="btn" type="button" id="testAwayBtn">测试客队连接</button>
+          </div>
+          <p id="settingsMessage" class="muted"></p>
+        </section>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="reportModal" aria-label="赛后报告" aria-hidden="true">
+    <div class="modal-card report-card">
+      <div class="modal-head">
+        <h2>赛后报告</h2>
+        <button class="btn" id="reportClose">关闭</button>
+      </div>
+      <pre id="reportContent" class="report-content">暂无报告。</pre>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
