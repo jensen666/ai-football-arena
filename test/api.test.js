@@ -190,6 +190,7 @@ test("HTTP API 重新开始比赛：停止旧比赛并以新 match_id 启动", a
     assert.notEqual(thirdMatchId, secondMatchId);
     assert.equal(restartAgain.data.restarted_from, secondMatchId);
   } finally {
+    if (baseUrl) await request(baseUrl, "/api/match/stop", { method: "POST", body: "{}" }).catch(() => {});
     server?.close();
     if (originalConfig === null) await rm(CONFIG_PATH, { force: true });
     else await writeFile(CONFIG_PATH, originalConfig, "utf8");

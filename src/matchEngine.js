@@ -43,6 +43,9 @@ export class MatchEngine {
     this.onEvent = null;
     this.onActionEvent = null;
     this.reportPaths = null;
+    this.varReviewType = null;
+    this.concedingTeam = null;
+    this.kickoffTeam = "home";
     this.startedAt = nowIso();
   }
 
@@ -194,18 +197,22 @@ export class MatchEngine {
     this.logActionEvent("red_card", teamId, playerId, `${player.name} 被红牌罚下。`);
   }
 
-  /** 触发 VAR 复核。 */
-  triggerVarCheck(reason = "关键判罚复核") {
-    this.previousState = this.state;
+  /** 触发 VAR 复核，按复核类型区分进球有效性与关键判罚。 */
+  triggerVarCheck(reason = "关键判罚复核", options = {}) {
+    this.varReviewType = options?.reviewType || (reason.includes("进球") ? "goal_validity" : "key_decision");
     this.changeState("var_check");
-    this.logEvent("var_check", null, null, reason, { review_type: "key_decision" });
+    this.logEvent("var_check", null, null, reason, { review_type: this.varReviewType });
   }
 
-  /** 完成 VAR 复核。 */
+  /** 完成 VAR 复核：进球有效性维持原判回 goal_scored，关键判罚回 free_kick；改判无效未实现，按维持原判流转并标注。 */
   completeVarCheck(result = "维持原判") {
-    const nextState = this.previousState === "in_play" ? "free_kick" : this.previousState;
-    this.logEvent("var_result", null, null, `VAR 结果：${result}`, { final_decision: result, restart_state: nextState });
-    this.changeState(nextState || "in_play");
+    const isGoalValidity = this.varReviewType === "goal_validity";
+    const nextState = isGoalValidity ? "goal_scored" : "free_kick";
+    const implemented = result !== "改判无效";
+    const description = `VAR 结果：${result}${implemented ? "" : "（未实现改判）"}`;
+    this.logEvent("var_result", null, null, description, { final_decision: result, restart_state: nextState, implemented, review_type: this.varReviewType });
+    this.varReviewType = null;
+    this.changeState(nextState);
   }
 
   /** 模拟点球大战。 */
@@ -382,16 +389,29 @@ export class MatchEngine {
 
   handleTimedStates() {
     if (this.state === "kickoff" && this.stateTicks >= TICKS_PER_SECOND * 2) this.changeState("in_play");
-    if (["throw_in", "goal_kick", "corner_kick", "free_kick", "penalty_kick", "goal_scored"].includes(this.state) && this.stateTicks >= TICKS_PER_SECOND * 3) this.changeState(this.state === "goal_scored" ? "kickoff" : "in_play");
+    if (["throw_in", "goal_kick", "corner_kick", "free_kick", "penalty_kick", "goal_scored"].includes(this.state) && this.stateTicks >= TICKS_PER_SECOND * 3) {
+      if (this.state === "goal_scored") this.restartFromKickoff(this.concedingTeam);
+      else this.changeState("in_play");
+    }
     if (this.state === "var_check" && this.stateTicks >= TICKS_PER_SECOND * 2) this.completeVarCheck("维持原判");
     if (this.state === "half_time" && this.stateTicks >= TICKS_PER_SECOND * 2) {
       this.period = "second_half";
-      this.changeState("kickoff");
+      this.kickoffTeam = this.kickoffTeam === "home" ? "away" : "home";
+      this.restartFromKickoff(this.kickoffTeam);
     }
     if (this.state === "extra_time_break" && this.stateTicks >= TICKS_PER_SECOND * 2) {
       this.period = this.period === "full_time" ? "extra_first" : "extra_second";
-      this.changeState("kickoff");
+      this.kickoffTeam = this.kickoffTeam === "home" ? "away" : "home";
+      this.restartFromKickoff(this.kickoffTeam);
     }
+  }
+
+  /** 中圈开球重启：归位球员、球回中圈交给开球方，并清除失球方标记。 */
+  restartFromKickoff(kickoffTeam) {
+    this.enterKickoff(kickoffTeam);
+    this.setupKickoff(kickoffTeam);
+    this.concedingTeam = null;
+    this.changeState("kickoff");
   }
 
   handlePeriodBoundaries() {
@@ -613,15 +633,17 @@ export class MatchEngine {
     team.stats.shots += 1;
     team.stats.xG += xG;
     const scored = this.rng.next() < xG;
-    const onTarget = scored || this.rng.next() < clamp(xG + 0.25, 0.08, 0.75);
+    const onTargetRoll = this.rng.next();
+    const onTarget = scored || onTargetRoll < clamp(xG + 0.25, 0.08, 0.75);
     if (onTarget) team.stats.shotsOnTarget += 1;
     if (scored) {
       team.score += 1;
       shooter.form = clamp(shooter.form + 2, -10, 10);
       const trajectory = this.shotTrajectory(shooter, onTarget, true);
+      this.concedingTeam = this.possessionTeam === "home" ? "away" : "home";
       this.logEvent("goal", this.possessionTeam, shooter.id, `${shooter.name} 破门得分。`, { xG, restart_state: "kickoff" });
       this.logActionEvent("goal", this.possessionTeam, shooter.id, `${shooter.name} 破门得分。`, { xG, trajectory });
-      if (this.rng.next() < 0.2) this.triggerVarCheck("进球有效性复核。");
+      if (this.rng.next() < 0.2) this.triggerVarCheck("进球有效性复核。", { reviewType: "goal_validity" });
       else this.changeState("goal_scored");
     } else {
       const trajectory = this.shotTrajectory(shooter, onTarget, false);
@@ -848,6 +870,33 @@ export class MatchEngine {
     this.state = nextState;
     this.stateTicks = 0;
     if (nextState === "in_play") this.clearBallTarget();
+  }
+
+  /** 中圈开球：球回中圈并交给指定开球方，场上无人时 holderId 兜底为 null。 */
+  setupKickoff(kickoffTeam) {
+    this.possessionTeam = kickoffTeam;
+    const kicker = this.selectKickoffPlayer(kickoffTeam);
+    this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: kickoffTeam, holderId: kicker?.id ?? null };
+  }
+
+  /** 选择开球方场上开球手，优先前锋，找不到返回 null。 */
+  selectKickoffPlayer(kickoffTeam) {
+    const players = getOnFieldPlayers(this.teams[kickoffTeam]);
+    if (!players.length) return null;
+    return players.find((player) => player.position === "ST") ?? players[0] ?? null;
+  }
+
+  /** 开球归位：双方场上球员回到阵型基础目标位置。 */
+  enterKickoff(kickoffTeam) {
+    for (const side of ["home", "away"]) {
+      for (const player of this.teams[side].players) {
+        if (!player.onField) continue;
+        const baseX = player.baseTargetX ?? player.targetX;
+        const baseY = player.baseTargetY ?? player.targetY;
+        if (baseX !== undefined) player.x = baseX;
+        if (baseY !== undefined) player.y = baseY;
+      }
+    }
   }
 
   staminaSummary() {
