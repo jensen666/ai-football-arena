@@ -28,6 +28,15 @@
           </aside>
           <canvas id="pitchCanvas" width="1100" height="696" aria-label="2D 俯视足球场"></canvas>
           <div class="intent-radar" aria-hidden="true"></div>
+          <div class="pre-match-overlay" id="preMatchOverlay" aria-hidden="true">
+            <div class="pre-match-card">
+              <div class="pre-match-spinner" aria-hidden="true"></div>
+              <h3 class="pre-match-title" id="preMatchTitle">双方教练正在制定战术</h3>
+              <div class="pre-match-row home" id="preMatchHome">主队 · 准备中</div>
+              <div class="pre-match-row away" id="preMatchAway">客队 · 准备中</div>
+              <p class="pre-match-hint">首回合战术由大模型生成，预计数秒至数十秒</p>
+            </div>
+          </div>
         </div>
         <div class="control-row">
           <button class="btn primary" id="startBtn">开始比赛</button>

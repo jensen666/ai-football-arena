@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CoachOrchestrator, createCoachRequestBody, extractCoachDecision } from "../src/coachOrchestrator.js";
+import { CoachOrchestrator, REQUEST_TIMEOUT_MS, createCoachRequestBody, extractCoachDecision } from "../src/coachOrchestrator.js";
 import { MatchEngine } from "../src/matchEngine.js";
 import { behaviorWeights, createDefaultDecision, decisionSummary, interpretDecision, validateCoachDecision } from "../src/tactics.js";
 import { createRng } from "../src/utils.js";
@@ -67,7 +67,7 @@ test("单队同一时间最多 1 个在途请求，超时后沿用上一有效�
   const orchestrator = new CoachOrchestrator(engine, config);
   assert.equal(orchestrator.scheduleIfNeeded("home", "pre_match"), true);
   assert.equal(orchestrator.scheduleIfNeeded("home", "event"), false);
-  orchestrator.state.home.requestStartedAt = Date.now() - 61_000;
+  orchestrator.state.home.requestStartedAt = Date.now() - (REQUEST_TIMEOUT_MS + 1000);
   orchestrator.tick();
   assert.equal(orchestrator.state.home.status, "timeout");
   assert.equal(orchestrator.state.home.inFlight, false);
@@ -84,7 +84,7 @@ test("超时后的迟到模型响应不会应用战术", async () => {
   }
   const orchestrator = new SlowOrchestrator(engine, config);
   assert.equal(orchestrator.scheduleIfNeeded("home", "pre_match"), true);
-  orchestrator.state.home.requestStartedAt = Date.now() - 61_000;
+  orchestrator.state.home.requestStartedAt = Date.now() - (REQUEST_TIMEOUT_MS + 1000);
   orchestrator.tick();
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(orchestrator.state.home.status, "timeout");

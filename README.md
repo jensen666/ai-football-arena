@@ -13,6 +13,7 @@ It can run without any model API key by using built-in rule coaches, so the proj
 - Live 11v11 match simulation with possession, passing, shots, interceptions, fouls, cards, substitutions, set pieces, and reports.
 - Canvas-based 2D pitch with players, ball movement, score, timer, formations, commentary, and key events.
 - Model coach loop with validated tactical JSON, fallback decisions, risk labels, and visible model latency.
+- Pre-match loading overlay: while both coaches request their first-turn tactics from the model before kickoff, the pitch shows a "coaches are drafting tactics" overlay with a live, locally-ticked elapsed timer so the UI is never silent during the pre-match wait; coach status labels are localized (e.g. "drafting", "validating", "ready").
 - Works offline with local rule coaches when no API key is configured.
 - Local HTTP API and WebSocket updates for the browser UI.
 - Deterministic and safety-focused tests for engine rules, tactics, commentary, API behavior, and secret masking.

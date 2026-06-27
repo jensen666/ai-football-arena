@@ -11,6 +11,8 @@ let reconnectTimer = null;
 let currentMatchId = null;
 let startingMatch = false;
 let reportCache = null;
+let preMatchTimer = null;
+let pendingCoachDashboard = null;
 let coachSummaryMatchId = null;
 let lastCoachSummaries = { home: null, away: null };
 let commentaryFeed = [];
@@ -39,7 +41,8 @@ function collectUi() {
     startBtn: document.getElementById("startBtn"), pauseBtn: document.getElementById("pauseBtn"), resumeBtn: document.getElementById("resumeBtn"), restartBtn: document.getElementById("restartBtn"), stopBtn: document.getElementById("stopBtn"), reportBtn: document.getElementById("reportBtn"),
     settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), homeKeyStatus: document.getElementById("homeKeyStatus"), awayKeyStatus: document.getElementById("awayKeyStatus"), testHomeBtn: document.getElementById("testHomeBtn"), testAwayBtn: document.getElementById("testAwayBtn"),
     coachDashboard: document.getElementById("coachDashboard"), tacticPanel: document.getElementById("tacticPanel"), modelStats: document.getElementById("modelStats"), commentaryFeed: document.getElementById("commentaryFeed"), eventTimeline: document.getElementById("eventTimeline"), matchStats: document.getElementById("matchStats"), reportStatus: document.getElementById("reportStatus"),
-    reportModal: document.getElementById("reportModal"), reportClose: document.getElementById("reportClose"), reportContent: document.getElementById("reportContent")
+    reportModal: document.getElementById("reportModal"), reportClose: document.getElementById("reportClose"), reportContent: document.getElementById("reportContent"),
+    preMatchOverlay: document.getElementById("preMatchOverlay"), preMatchTitle: document.getElementById("preMatchTitle"), preMatchHome: document.getElementById("preMatchHome"), preMatchAway: document.getElementById("preMatchAway")
   };
 }
 
@@ -97,6 +100,9 @@ function resetClientMatchState(message = "当前没有正在运行的比赛。")
   currentMatchId = null;
   startingMatch = false;
   reportCache = null;
+  clearPreMatchTimer();
+  pendingCoachDashboard = null;
+  hidePreMatchOverlay();
   replaceCommentaryFeed([]);
   clearVisualEffects();
   resetCoachSummaryCache(null);
@@ -240,11 +246,14 @@ function connectWs(url) {
     if (message.payload?.teams?.home && message.payload?.teams?.away) {
       startingMatch = false;
       latest = message.payload;
+      if (pendingCoachDashboard && !latest.coach_dashboard) latest.coach_dashboard = pendingCoachDashboard;
+      pendingCoachDashboard = null;
       mergeCommentaryEvents(latest.recent_action_events || []);
     } else if (message.type === "commentary") {
       appendCommentary(message.payload);
-    } else if (message.type === "coach" && latest) {
-      latest = { ...latest, coach_dashboard: message.payload };
+    } else if (message.type === "coach") {
+      if (latest) latest = { ...latest, coach_dashboard: message.payload };
+      else pendingCoachDashboard = message.payload;
     }
     updateUi();
   });
@@ -278,6 +287,7 @@ function disconnectWs() {
   reconnectTimer = null;
   if (socket) socket.close();
   socket = null;
+  clearPreMatchTimer();
 }
 
 /** 根据最新状态刷新界面。 */
@@ -302,6 +312,7 @@ function updateUi() {
   window.__footballArenaDebug.ballVisible = Boolean(latest.ball);
   window.__footballArenaDebug.commentaryCount = commentaryFeed.length;
   window.__footballArenaDebug.latestCommentary = commentaryFeed.at(-1) || null;
+  renderPreMatch(latest);
   updateControls();
 }
 
@@ -517,7 +528,88 @@ function decisionSummaryText(summary = {}) {
 
 function coachCard(side, label, data = {}) {
   const summary = rememberedDecisionSummary(side, data.last_decision_summary || {});
-  return `<div class="feed-item ${side}"><div class="feed-title"><span>${label} · ${escapeHtml(data.status || "idle")}</span><span>${Math.round(data.elapsed_ms || data.last_latency_ms || 0)}ms</span></div><div class="feed-main">${escapeHtml(decisionSummaryText(summary))}</div><div class="pill-row"><span class="pill">risk ${Number(summary.risk_level || 0).toFixed(2)}</span><span class="pill">${escapeHtml(summary.intent || "pending")}</span><span class="pill">${escapeHtml(data.fallback_status || "正常")}</span></div></div>`;
+  return `<div class="feed-item ${side}"><div class="feed-title"><span>${label} · ${escapeHtml(coachStatusText(data.status))}</span><span>${Math.round(data.elapsed_ms || data.last_latency_ms || 0)}ms</span></div><div class="feed-main">${escapeHtml(decisionSummaryText(summary))}</div><div class="pill-row"><span class="pill">risk ${Number(summary.risk_level || 0).toFixed(2)}</span><span class="pill">${escapeHtml(summary.intent || "pending")}</span><span class="pill">${escapeHtml(data.fallback_status || "正常")}</span></div></div>`;
+}
+
+/** 返回教练状态对应的中文文案。 */
+function coachStatusText(status) {
+  return { idle: "待命", requesting: "制定战术中", validating: "校验战术中", applied: "战术已就绪", pending: "暂停待应用", timeout: "请求超时", error: "沿用默认战术" }[status] || status || "待命";
+}
+
+/** 判断某侧是否已进入赛前决策就绪态。 */
+function preMatchSideReady(data = {}) {
+  return Boolean(data && (data.status === "applied" || data.status === "timeout" || data.status === "error" || data.status === "pending"));
+}
+
+/** 渲染赛前阶段覆盖层：仅 pre_match 状态显示，并基于 request_started_at 本地实时跳动耗时。 */
+function renderPreMatch(state) {
+  if (!state || state.state !== "pre_match") {
+    clearPreMatchTimer();
+    hidePreMatchOverlay();
+    return;
+  }
+  const dashboard = state.coach_dashboard || pendingCoachDashboard || { home: {}, away: {} };
+  const home = dashboard.home || {};
+  const away = dashboard.away || {};
+  const homeReady = preMatchSideReady(home);
+  const awayReady = preMatchSideReady(away);
+  ui.preMatchTitle.textContent = homeReady && awayReady ? "战术已就绪，即将开球" : "双方教练正在制定战术";
+  ui.preMatchHome.innerHTML = preMatchRowHtml("主队", home);
+  ui.preMatchAway.innerHTML = preMatchRowHtml("客队", away);
+  showPreMatchOverlay();
+  startPreMatchTimer(state, dashboard);
+}
+
+/** 构造单侧赛前状态行，包含本地实时跳动的耗时。 */
+function preMatchRowHtml(label, data = {}) {
+  const status = coachStatusText(data.status);
+  const elapsed = data.in_flight && data.request_started_at ? formatPreMatchElapsed(Date.now() - new Date(data.request_started_at).getTime()) : data.last_latency_ms ? `${Math.round(data.last_latency_ms / 1000)}s` : "";
+  return `<span>${label} · ${escapeHtml(status)}</span><span class="pre-match-elapsed">${elapsed}</span>`;
+}
+
+/** 格式化赛前请求已用秒数。 */
+function formatPreMatchElapsed(ms) {
+  const seconds = Math.max(0, ms / 1000);
+  return `${seconds.toFixed(1)}s`;
+}
+
+/** 启动本地计时器，让进行中请求的耗时每 100ms 跳动一次。 */
+function startPreMatchTimer(state, dashboard) {
+  const homeInFlight = dashboard.home?.in_flight && dashboard.home?.request_started_at;
+  const awayInFlight = dashboard.away?.in_flight && dashboard.away?.request_started_at;
+  if (!homeInFlight && !awayInFlight) {
+    clearPreMatchTimer();
+    return;
+  }
+  if (preMatchTimer) return;
+  preMatchTimer = setInterval(() => {
+    if (!latest || latest.state !== "pre_match") {
+      clearPreMatchTimer();
+      hidePreMatchOverlay();
+      return;
+    }
+    const current = latest.coach_dashboard || pendingCoachDashboard || { home: {}, away: {} };
+    ui.preMatchHome.innerHTML = preMatchRowHtml("主队", current.home || {});
+    ui.preMatchAway.innerHTML = preMatchRowHtml("客队", current.away || {});
+  }, 100);
+}
+
+/** 清除赛前本地计时器。 */
+function clearPreMatchTimer() {
+  if (preMatchTimer) clearInterval(preMatchTimer);
+  preMatchTimer = null;
+}
+
+/** 显示赛前覆盖层。 */
+function showPreMatchOverlay() {
+  ui.preMatchOverlay.classList.add("open");
+  ui.preMatchOverlay.setAttribute("aria-hidden", "false");
+}
+
+/** 隐藏赛前覆盖层。 */
+function hidePreMatchOverlay() {
+  ui.preMatchOverlay.classList.remove("open");
+  ui.preMatchOverlay.setAttribute("aria-hidden", "true");
 }
 
 function tacticCard(side, label, tactics = {}) {

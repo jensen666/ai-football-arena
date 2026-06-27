@@ -2,7 +2,7 @@ import { createDefaultDecision, decisionSummary, interpretDecision, phaseFromMat
 import { SUPPORTED_FORMATIONS } from "./teamFactory.js";
 import { TICKS_PER_SECOND, redactSensitive } from "./utils.js";
 
-const REQUEST_TIMEOUT_MS = 60_000;
+export const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_DECISION_INTERVAL_TICKS = TICKS_PER_SECOND * 15;
 
 /** 大模型教练连续调度器。 */
@@ -164,7 +164,7 @@ export class CoachOrchestrator {
     sideState.abortController = null;
     sideState.inFlight = false;
     sideState.status = "timeout";
-    this.engine.matchLog.safety_log.push({ tick: this.engine.tick, type: "model_timeout", side, message: "模型请求超过 60 秒，沿用上一有效战术。" });
+    this.engine.matchLog.safety_log.push({ tick: this.engine.tick, type: "model_timeout", side, message: `模型请求超过 ${REQUEST_TIMEOUT_MS / 1000} 秒，沿用上一有效战术。` });
     this.onUpdate("coach", this.dashboard());
   }
 
@@ -247,7 +247,7 @@ export class CoachOrchestrator {
       request_end_tick: this.engine.tick,
       latency_ms: Date.now() - startedAt,
       request_status: validation.validation_result === "invalid" ? "invalid" : status,
-      request_timeout_sec: 60,
+      request_timeout_sec: REQUEST_TIMEOUT_MS / 1000,
       coach_input_hash: `${side}_${this.engine.tick}_${sideState.requestCount}`,
       coach_input_summary: input.summary,
       coach_input_payload_ref: null,
@@ -316,7 +316,8 @@ export class CoachOrchestrator {
       status: state.status,
       in_flight: state.inFlight,
       elapsed_ms: state.inFlight ? Date.now() - state.requestStartedAt : 0,
-      request_timeout_sec: 60,
+      request_started_at: state.inFlight && state.requestStartedAt ? new Date(state.requestStartedAt).toISOString() : null,
+      request_timeout_sec: REQUEST_TIMEOUT_MS / 1000,
       request_count: state.requestCount,
       valid_decision_count: state.validDecisionCount,
       error_count: state.errorCount,

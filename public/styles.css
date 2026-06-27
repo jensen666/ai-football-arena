@@ -104,3 +104,89 @@ input, select { min-height: 36px; width: 100%; border: 1px solid var(--line); bo
   .form-grid, .modal-body { grid-template-columns: 1fr; }
   .modal-body .wide { grid-column: auto; }
 }
+
+/** 赛前阶段覆盖层：双方教练制定首回合战术时的 loading 反馈。 */
+.pre-match-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(8,17,13,.66), rgba(8,17,13,.86));
+  backdrop-filter: blur(3px);
+  z-index: 5;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .28s ease, visibility .28s ease;
+  pointer-events: none;
+}
+
+.pre-match-overlay.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.pre-match-card {
+  width: min(420px, 86%);
+  padding: 28px 30px 22px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, rgba(20,36,28,.96), rgba(8,17,13,.96));
+  border: 1px solid rgba(244,208,111,.28);
+  box-shadow: 0 24px 80px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.06);
+  text-align: center;
+  color: var(--text);
+}
+
+.pre-match-spinner {
+  width: 42px;
+  height: 42px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  border: 3px solid rgba(244,208,111,.18);
+  border-top-color: #f0c15d;
+  animation: pre-match-spin .9s linear infinite;
+}
+
+@keyframes pre-match-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pre-match-title {
+  margin: 0 0 14px;
+  font-size: 16px;
+  color: #f0c15d;
+  letter-spacing: .04em;
+}
+
+.pre-match-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.04);
+  font-size: 13px;
+}
+
+.pre-match-row.home { border-left: 3px solid #00d9ff; }
+.pre-match-row.away { border-left: 3px solid #ff3b30; }
+
+.pre-match-row .pre-match-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: #d9c57c;
+  font-size: 12px;
+}
+
+.pre-match-hint {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pre-match-spinner { animation: none; border-top-color: rgba(244,208,111,.5); }
+  .pre-match-overlay { transition: none; }
+}
