@@ -219,13 +219,14 @@ export class CoachOrchestrator {
     return { summary, snapshot: redactSensitive(snapshot), included_event_ids: includedEvents.map((event) => event.event_id) };
   }
 
-  /** 调用真实或本地规则教练。 */
+  /** 调用真实或本地规则教练。有 endpoint 即调用真实模型，无 endpoint 才走规则教练。 */
   async callCoach(side, input, signal) {
     const coach = side === "home" ? this.config.homeCoach : this.config.awayCoach;
-    if (!coach || coach.provider === "local" || !coach.endpoint) return createDefaultDecision(side, this.engine.tick, this.engine.teams[side].formation, this.state[side].requestCount);
+    if (!coach || !coach.endpoint) return createDefaultDecision(side, this.engine.tick, this.engine.teams[side].formation, this.state[side].requestCount);
     const apiKey = resolveApiKey(coach);
     if (!apiKey) throw new Error("缺少模型 API Key");
-    const response = await fetch(coach.endpoint, { method: "POST", signal, headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(createCoachRequestBody(coach, input)) });
+    const endpoint = resolveChatEndpoint(coach);
+    const response = await fetch(endpoint, { method: "POST", signal, headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(createCoachRequestBody(coach, input)) });
     if (!response.ok) throw new Error(`模型接口返回 ${response.status}`);
     const payload = await response.json();
     return extractCoachDecision(payload);
@@ -392,7 +393,7 @@ function coachMessages(coach, input) {
 }
 
 export function usesChatCompletions(coach = {}) {
-  return ["deepseek", "openai", "glm", "mimo"].includes(String(coach.provider || "").toLowerCase()) || /chat\/completions/i.test(coach.endpoint || "");
+  return ["deepseek", "openai", "glm", "mimo"].includes(String(coach.provider || "").toLowerCase()) || /chat\/completions/i.test(resolveChatEndpoint(coach));
 }
 
 /** 判断模型接口是否支持强制 JSON 响应。 */
@@ -406,6 +407,14 @@ export function resolveApiKey(coach) {
   if (coach.api_key_once) return coach.api_key_once;
   if (coach.api_key_ref?.startsWith("env:")) return process.env[coach.api_key_ref.slice(4)] || "";
   return "";
+}
+
+/** 解析模型 chat completions 端点，未带路径时自动补全，避免 provider 误填导致请求打错地址。 */
+export function resolveChatEndpoint(coach = {}) {
+  const endpoint = String(coach.endpoint || "").trim();
+  if (!endpoint) return "";
+  if (/chat\/completions/i.test(endpoint)) return endpoint.replace(/\/+$/, "");
+  return `${endpoint.replace(/\/+$/, "")}/chat/completions`;
 }
 
 /** 返回策略摘要，避免把行为权重噪声传给模型。 */

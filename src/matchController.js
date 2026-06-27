@@ -1,5 +1,5 @@
 import { MatchEngine } from "./matchEngine.js";
-import { CoachOrchestrator, createCoachRequestBody, extractCoachDecision, resolveApiKey } from "./coachOrchestrator.js";
+import { CoachOrchestrator, createCoachRequestBody, extractCoachDecision, resolveApiKey, resolveChatEndpoint } from "./coachOrchestrator.js";
 import { saveMatchArtifacts } from "./reporting.js";
 import { loadConfig, mergeConfig, saveConfig, sanitizeConfig } from "./storage.js";
 import { createRng, redactSensitive } from "./utils.js";
@@ -33,6 +33,7 @@ export class MatchController {
   async updateConfig(input) {
     this.config = await saveConfig(this.withSavedKeys(input));
     this.extraSecrets = this.collectSecrets(this.config);
+    if (this.orchestrator) this.orchestrator.config = this.config;
     return sanitizeConfig(this.config, this.extraSecrets);
   }
 
@@ -40,9 +41,8 @@ export class MatchController {
   async testModel({ side = "home", coach = {} }) {
     const apiKey = coach.api_key || coach.api_key_once || "";
     if (apiKey) this.extraSecrets = [...new Set([...this.extraSecrets, apiKey])];
-    if (coach.provider === "local") return { status: "success", message: "本地规则教练可用。" };
+    if (!coach.endpoint) return { status: "success", message: "本地规则教练可用。" };
     if (!apiKey && !coach.api_key_ref) return { status: "missing_key", message: "缺少 API Key 或环境变量引用。" };
-    if (!coach.endpoint) return { status: "error", message: "缺少 endpoint。" };
     const resolvedKey = resolveApiKey(coach);
     if (!resolvedKey) return { status: "missing_key", message: "无法解析 API Key。" };
     const controller = new AbortController();
@@ -58,7 +58,7 @@ export class MatchController {
           instruction: "Return one minimal legal CoachDecision JSON for connectivity testing."
         }
       };
-      const response = await fetch(coach.endpoint, {
+      const response = await fetch(resolveChatEndpoint(coach), {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolvedKey}` },
@@ -135,6 +135,18 @@ export class MatchController {
     this.ensureEngine();
     this.engine.stop();
     return await this.finishIfNeeded();
+  }
+
+  /** 重新开始比赛：先停止当前比赛（生成报告），再用相同配置启动新比赛。 */
+  async restart(configInput = null) {
+    let restartedFrom = null;
+    if (this.engine) {
+      restartedFrom = this.engine.matchId;
+      this.engine.stop();
+      await this.finishIfNeeded();
+    }
+    const result = await this.start(configInput || this.config);
+    return { ...result, restarted_from: restartedFrom };
   }
 
   /** 获取当前比赛。 */

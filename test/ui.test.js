@@ -236,3 +236,18 @@ test("点击开始比赛立即进入启动状态且不重复保存配置", async
   assert.ok(app.includes("ui.startBtn.disabled = running || startingMatch;"));
   assert.ok(app.includes("startingMatch = false;\n      latest = message.payload;"));
 });
+
+/** 设置表单应展示 API Key 保存状态，避免用户误以为密钥丢失。 */
+test("设置表单展示 API Key 保存状态", async () => {
+  const [html, app] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFrontendSource()
+  ]);
+  assert.ok(html.includes('id="homeKeyStatus"'));
+  assert.ok(html.includes('id="awayKeyStatus"'));
+  assert.ok(html.includes("留空则保留已保存密钥"));
+  assert.ok(app.includes("homeKeyStatus: document.getElementById(\"homeKeyStatus\")"));
+  assert.ok(app.includes("awayKeyStatus: document.getElementById(\"awayKeyStatus\")"));
+  assert.ok(app.includes("nextConfig.homeCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
+  assert.ok(app.includes("nextConfig.awayCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
+});

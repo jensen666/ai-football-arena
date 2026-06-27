@@ -83,14 +83,14 @@ npm run test:e2e-note
 
 The app is usable without a real model key. In that mode, local rule coaches generate legal tactical decisions and the match can still finish normally.
 
-To use real model coaches, open the settings panel in the browser and configure provider, model, endpoint, and API key reference. The recommended key format is an environment reference such as:
+To use real model coaches, open the settings panel in the browser and configure `endpoint`, `model`, and an API key. As long as an `endpoint` is set, that side's coach calls the real model; leave `endpoint` empty to keep the local rule coach. The `endpoint` may be a base URL (e.g. `https://api.example.com/v1`) and is automatically completed with `/chat/completions`. The recommended key format is an environment reference such as:
 
 ```text
 env:DEEPSEEK_API_KEY
 env:OPENAI_API_KEY
 ```
 
-Compatible `chat/completions` endpoints use a `messages` request shape. If a model request fails, times out, or returns an invalid decision, the engine logs the error and continues with the last valid or fallback tactic.
+Saved API keys are never echoed back to the settings panel to avoid leaking secrets; the panel shows a "key saved" status and an empty key field keeps the existing key. Config changes during a match take effect on the next model request. Compatible `chat/completions` endpoints use a `messages` request shape. If a model request fails, times out, or returns an invalid decision, the engine logs the error and continues with the last valid or fallback tactic.
 
 ## Local Data And Secrets
 
@@ -134,6 +134,7 @@ docs/assets/            README images and GIFs
 - `POST /api/match/pause`
 - `POST /api/match/resume`
 - `POST /api/match/stop`
+- `POST /api/match/restart` — 停止当前比赛（生成报告）并使用最新配置开启新比赛，返回新 `match_id` 与 `restarted_from`（旧 `match_id`，无旧比赛时为 `null`）。
 - `GET /api/match/current`
 - `GET /api/reports/{match_id}`
 

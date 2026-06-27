@@ -36,8 +36,8 @@ async function init() {
 function collectUi() {
   return {
     homeName: document.getElementById("homeName"), awayName: document.getElementById("awayName"), homeScore: document.getElementById("homeScore"), awayScore: document.getElementById("awayScore"), matchTime: document.getElementById("matchTime"), matchState: document.getElementById("matchState"), matchSummary: document.getElementById("matchSummary"),
-    startBtn: document.getElementById("startBtn"), pauseBtn: document.getElementById("pauseBtn"), resumeBtn: document.getElementById("resumeBtn"), stopBtn: document.getElementById("stopBtn"), reportBtn: document.getElementById("reportBtn"),
-    settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), testHomeBtn: document.getElementById("testHomeBtn"), testAwayBtn: document.getElementById("testAwayBtn"),
+    startBtn: document.getElementById("startBtn"), pauseBtn: document.getElementById("pauseBtn"), resumeBtn: document.getElementById("resumeBtn"), restartBtn: document.getElementById("restartBtn"), stopBtn: document.getElementById("stopBtn"), reportBtn: document.getElementById("reportBtn"),
+    settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), homeKeyStatus: document.getElementById("homeKeyStatus"), awayKeyStatus: document.getElementById("awayKeyStatus"), testHomeBtn: document.getElementById("testHomeBtn"), testAwayBtn: document.getElementById("testAwayBtn"),
     coachDashboard: document.getElementById("coachDashboard"), tacticPanel: document.getElementById("tacticPanel"), modelStats: document.getElementById("modelStats"), commentaryFeed: document.getElementById("commentaryFeed"), eventTimeline: document.getElementById("eventTimeline"), matchStats: document.getElementById("matchStats"), reportStatus: document.getElementById("reportStatus"),
     reportModal: document.getElementById("reportModal"), reportClose: document.getElementById("reportClose"), reportContent: document.getElementById("reportContent")
   };
@@ -63,6 +63,7 @@ function bindEvents() {
   ui.startBtn.addEventListener("click", startMatch);
   ui.pauseBtn.addEventListener("click", () => postControl("pause"));
   ui.resumeBtn.addEventListener("click", () => postControl("resume"));
+  ui.restartBtn.addEventListener("click", restartMatch);
   ui.stopBtn.addEventListener("click", stopMatch);
   ui.reportBtn.addEventListener("click", openReport);
 }
@@ -181,6 +182,38 @@ async function stopMatch() {
   updateUi();
 }
 
+/** 重新开始比赛：先停止当前比赛（生成报告），再使用最新配置开启新比赛。 */
+async function restartMatch() {
+  if (startingMatch) {
+    ui.reportStatus.textContent = "比赛正在启动，请稍候再试。";
+    return;
+  }
+  if (!ui.settingsForm.checkValidity()) {
+    openModal(ui.settingsModal);
+    showSettingsValidationMessage();
+    return;
+  }
+  startingMatch = true;
+  ui.reportStatus.textContent = "正在重新开始比赛...";
+  updateControls();
+  try {
+    config = formConfig();
+    disconnectWs();
+    const data = await fetchJson("/api/match/restart", { method: "POST", body: JSON.stringify({ config }) });
+    reportCache = null;
+    replaceCommentaryFeed([]);
+    resetCoachSummaryCache(data.match_id);
+    currentMatchId = data.match_id;
+    connectWs(data.ws_url);
+    const reused = data.restarted_from ? `（已结束上一场 ${data.restarted_from}）` : "";
+    ui.reportStatus.textContent = `新比赛已启动 ${reused}，报告将在停止或完场后生成。`;
+  } catch (error) {
+    startingMatch = false;
+    ui.reportStatus.textContent = `重新开始失败：${error.message}`;
+    updateControls();
+  }
+}
+
 /** 打开报告。 */
 async function openReport() {
   if (!currentMatchId && !latest?.match_id) return;
@@ -278,6 +311,7 @@ function updateControls() {
   ui.startBtn.disabled = running || startingMatch;
   ui.pauseBtn.disabled = !running || latest?.paused;
   ui.resumeBtn.disabled = !running || !latest?.paused;
+  ui.restartBtn.disabled = startingMatch;
   ui.stopBtn.disabled = !running;
 }
 
@@ -368,12 +402,14 @@ function fillForm(nextConfig) {
   ui.settingsForm.homeEndpoint.value = nextConfig.homeCoach.endpoint || "";
   ui.settingsForm.homeKeyRef.value = nextConfig.homeCoach.api_key_ref || "";
   ui.settingsForm.homeApiKey.value = "";
+  ui.homeKeyStatus.textContent = nextConfig.homeCoach.api_key_set ? "已保存密钥，留空保留" : "未设置密钥";
   ui.settingsForm.homePrompt.value = nextConfig.homeCoach.free_strategy_prompt || "";
   ui.settingsForm.awayProvider.value = nextConfig.awayCoach.provider;
   ui.settingsForm.awayModel.value = nextConfig.awayCoach.model;
   ui.settingsForm.awayEndpoint.value = nextConfig.awayCoach.endpoint || "";
   ui.settingsForm.awayKeyRef.value = nextConfig.awayCoach.api_key_ref || "";
   ui.settingsForm.awayApiKey.value = "";
+  ui.awayKeyStatus.textContent = nextConfig.awayCoach.api_key_set ? "已保存密钥，留空保留" : "未设置密钥";
   ui.settingsForm.awayPrompt.value = nextConfig.awayCoach.free_strategy_prompt || "";
   ui.settingsForm.homeFormation.value = nextConfig.match.homeFormation || "";
   ui.settingsForm.awayFormation.value = nextConfig.match.awayFormation || "";

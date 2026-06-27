@@ -3,6 +3,7 @@ let ctx = null;
 let debugTarget = {};
 let visualEffects = [];
 const seenVisualEffectIds = new Set();
+const lastPlayerAngles = new Map();
 
 const VISUAL_EFFECT_MS = 1600;
 const ACTION_EFFECT_MS = 900;
@@ -193,7 +194,7 @@ function drawPlayer(player, side, width, height, isHolder = false, time = perfor
 /** 返回球员当前姿态。 */
 function playerPose(player, side, width, height, time = performance.now()) {
   const action = activePlayerAction(player, side, time);
-  const base = movementPose(player, width, height, time);
+  const base = movementPose(player, side, width, height, time);
   if (!action) return base;
   const pulse = Math.sin(Math.PI * action.age);
   const actionAngle = action.angle ?? base.angle;
@@ -215,8 +216,11 @@ function playerPose(player, side, width, height, time = performance.now()) {
   };
 }
 
-/** 普通跑动姿态。 */
-function movementPose(player, width, height, time = performance.now()) {
+/** 普通跑动姿态。
+ * 当球员在原地微幅摆动时，保持上一次朝向，避免因 weave 导致的目标点
+ * 在左右反复变号而左右转头。真正大范围移动时才平滑转向目标方向。
+ */
+function movementPose(player, side, width, height, time = performance.now()) {
   const point = toCanvas(player, width, height);
   const target = toCanvas({ x: player.targetX ?? player.x, y: player.targetY ?? player.y }, width, height);
   const dx = target.x - point.x;
@@ -225,8 +229,15 @@ function movementPose(player, width, height, time = performance.now()) {
   const moving = gap > 1.2;
   const step = moving ? Math.sin(time / 120 + player.id * 0.7) : 0;
   const spec = moving ? PLAYER_ACTION_SYSTEM.run : PLAYER_ACTION_SYSTEM.idle;
+  const targetAngle = moving ? Math.atan2(dy, dx) : -Math.PI / 2;
+  const angleKey = `${side}-${player.id}`;
+  const lastAngle = lastPlayerAngles.get(angleKey) ?? targetAngle;
+  // 小位移时不更新朝向，避免 weave 引发的反复左右横跳；
+  // 大位移时做角度插值，避免瞬间跳变。
+  const angle = gap <= 3 ? lastAngle : smoothAngle(lastAngle, targetAngle, 0.35);
+  lastPlayerAngles.set(angleKey, angle);
   return {
-    angle: moving ? Math.atan2(dy, dx) : -Math.PI / 2,
+    angle,
     actionKey: moving ? "run" : "idle",
     lean: moving ? spec.lean : 0,
     stretch: moving ? clampView(gap / 26, 0.08, spec.stretch) : 0,
@@ -236,6 +247,14 @@ function movementPose(player, width, height, time = performance.now()) {
     crouch: moving ? spec.crouch : 0,
     run: moving ? clampView(gap / 24, 0.15, 0.55) : 0
   };
+}
+
+/** 角度平滑插值，处理 -PI/PI 环绕。 */
+function smoothAngle(from, to, factor) {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  return from + delta * factor;
 }
 
 /** 将动作事件映射到小人仔动作系统。 */

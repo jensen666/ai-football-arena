@@ -33,6 +33,7 @@
           <button class="btn primary" id="startBtn">开始比赛</button>
           <button class="btn" id="pauseBtn">暂停</button>
           <button class="btn" id="resumeBtn">恢复</button>
+          <button class="btn" id="restartBtn">重新开始</button>
           <button class="btn" id="stopBtn">停止并生成报告</button>
           <button class="btn" id="settingsOpen">设置</button>
           <button class="btn" id="reportBtn">打开报告</button>
@@ -86,6 +87,7 @@
           <label>Endpoint<input name="homeEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
           <label>API Key 引用<input name="homeKeyRef" placeholder="env:DEEPSEEK_API_KEY"></label>
           <label>API Key<input name="homeApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <small class="key-status" id="homeKeyStatus">未设置密钥</small>
           <label>自由策略提示<input name="homePrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
         </section>
         <section>
@@ -95,6 +97,7 @@
           <label>Endpoint<input name="awayEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
           <label>API Key 引用<input name="awayKeyRef" placeholder="env:GLM_API_KEY"></label>
           <label>API Key<input name="awayApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <small class="key-status" id="awayKeyStatus">未设置密钥</small>
           <label>自由策略提示<input name="awayPrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
         </section>
         <section class="wide">

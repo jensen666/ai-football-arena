@@ -142,3 +142,61 @@ test("HTTP API 对非法 JSON 返回 400", async () => {
     server.close();
   }
 });
+
+test("HTTP API 重新开始比赛：停止旧比赛并以新 match_id 启动", async () => {
+  let server = null;
+  let baseUrl = "";
+  const matchIds = [];
+  let originalConfig = null;
+  try {
+    try {
+      originalConfig = await readFile(CONFIG_PATH, "utf8");
+    } catch {}
+    await rm(CONFIG_PATH, { force: true });
+    ({ server, baseUrl } = await startServer());
+    const configResponse = await request(baseUrl, "/api/config");
+    const config = configResponse.data.config;
+
+    const firstStart = await request(baseUrl, "/api/match/start", { method: "POST", body: JSON.stringify({ config }) });
+    assert.equal(firstStart.response.status, 200);
+    const firstMatchId = firstStart.data.match_id;
+    matchIds.push(firstMatchId);
+    assert.ok(firstStart.data.ws_url.includes(firstMatchId));
+
+    const restart = await request(baseUrl, "/api/match/restart", { method: "POST", body: JSON.stringify({ config }) });
+    assert.equal(restart.response.status, 200);
+    const secondMatchId = restart.data.match_id;
+    matchIds.push(secondMatchId);
+    assert.notEqual(secondMatchId, firstMatchId);
+    assert.equal(restart.data.restarted_from, firstMatchId);
+    assert.ok(restart.data.ws_url.includes(secondMatchId));
+
+    // 旧比赛应能读取到已生成的报告
+    const oldReport = await request(baseUrl, `/api/reports/${firstMatchId}`);
+    assert.equal(oldReport.response.status, 200);
+    assert.ok(oldReport.data.summary.includes("赛后总结"));
+
+    // 新比赛应正在运行
+    const current = await request(baseUrl, "/api/match/current");
+    assert.equal(current.response.status, 200);
+    assert.equal(current.data.match.match_id, secondMatchId);
+    assert.notEqual(current.data.match.state, "full_time");
+
+    // 重复 restart 应继续生成新比赛
+    const restartAgain = await request(baseUrl, "/api/match/restart", { method: "POST", body: JSON.stringify({ config }) });
+    assert.equal(restartAgain.response.status, 200);
+    const thirdMatchId = restartAgain.data.match_id;
+    matchIds.push(thirdMatchId);
+    assert.notEqual(thirdMatchId, secondMatchId);
+    assert.equal(restartAgain.data.restarted_from, secondMatchId);
+  } finally {
+    server?.close();
+    if (originalConfig === null) await rm(CONFIG_PATH, { force: true });
+    else await writeFile(CONFIG_PATH, originalConfig, "utf8");
+    for (const matchId of matchIds) {
+      const paths = matchPaths(matchId);
+      await rm(paths.matchDir, { recursive: true, force: true });
+      await rm(paths.reportDir, { recursive: true, force: true });
+    }
+  }
+});

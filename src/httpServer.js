@@ -45,6 +45,7 @@ async function routeApi(request, response, controller, url) {
   if (request.method === "POST" && url.pathname === "/api/match/pause") return sendJson(response, 200, { ok: true, match: controller.pause() });
   if (request.method === "POST" && url.pathname === "/api/match/resume") return sendJson(response, 200, { ok: true, match: controller.resume() });
   if (request.method === "POST" && url.pathname === "/api/match/stop") return sendJson(response, 200, { ok: true, match: await controller.stop() });
+  if (request.method === "POST" && url.pathname === "/api/match/restart") return sendJson(response, 200, { ok: true, ...(await controller.restart((await readBody(request)).config)) });
   if (request.method === "GET" && url.pathname === "/api/match/current") return sendJson(response, 200, { ok: true, match: controller.current() });
   if (request.method === "GET" && url.pathname.startsWith("/api/reports/")) return await sendReport(response, url.pathname.split("/").pop());
   sendJson(response, 404, { ok: false, error: { code: "not_found", message: "接口不存在" } });

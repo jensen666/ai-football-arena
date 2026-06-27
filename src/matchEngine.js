@@ -38,7 +38,7 @@ export class MatchEngine {
     this.passReception = null;
     this.matchLog = this.createEmptyLog();
     this.pendingEvents = { home: [], away: [] };
-    this.carryTracker = { teamId: this.possessionTeam, playerId: this.ball.holderId, startX: this.ball.x, lastCommentaryTime: -Infinity };
+    this.carryTracker = { teamId: this.possessionTeam, playerId: this.ball.holderId, startX: this.ball.x, startTick: 0, lastCommentaryTime: -Infinity };
     this.shootout = null;
     this.onEvent = null;
     this.onActionEvent = null;
@@ -797,7 +797,7 @@ export class MatchEngine {
   /** 重置持球推进统计起点。 */
   resetCarryTracker() {
     const holder = this.teams[this.possessionTeam]?.players.find((player) => player.id === this.ball.holderId);
-    this.carryTracker = { teamId: this.possessionTeam, playerId: this.ball.holderId, startX: holder?.x ?? this.ball.x, lastCommentaryTime: this.carryTracker?.lastCommentaryTime ?? -Infinity };
+    this.carryTracker = { teamId: this.possessionTeam, playerId: this.ball.holderId, startX: holder?.x ?? this.ball.x, startTick: this.tick, lastCommentaryTime: this.carryTracker?.lastCommentaryTime ?? -Infinity };
   }
 
   /** 按推进距离和冷却时间生成持球推进播报。 */
@@ -819,7 +819,7 @@ export class MatchEngine {
     }
     if (gain >= 8 && this.gameTime - this.carryTracker.lastCommentaryTime >= 10) {
       this.logActionEvent("carry_progressive", this.possessionTeam, holder.id, "", { carry_distance: gain });
-      this.carryTracker = { teamId: this.possessionTeam, playerId: holder.id, startX: holder.x, lastCommentaryTime: this.gameTime };
+      this.carryTracker = { teamId: this.possessionTeam, playerId: holder.id, startX: holder.x, startTick: this.tick, lastCommentaryTime: this.gameTime };
     }
   }
 

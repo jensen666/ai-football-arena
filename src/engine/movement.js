@@ -82,6 +82,9 @@ function updateDynamicTargets() {
   const holder = holderTeam.players.find((player) => player.id === this.ball.holderId);
   const receptionPoint = this.passReception ? { x: this.passReception.targetX, y: this.passReception.targetY } : null;
   const pressurePoint = receptionPoint || (holder && this.isBallWithPlayer(holder, 7) ? holder : { x: Number.isFinite(this.ball.targetX) ? this.ball.targetX : this.ball.x, y: Number.isFinite(this.ball.targetY) ? this.ball.targetY : this.ball.y });
+  // 始终保留小幅相位摆动，使球员在球粘脚下时也持续走位；
+  // 各球员相位已按 id 错开，不会出现同步晃动。
+  const weaveIntensity = 1;
   for (const side of ["home", "away"]) {
     const team = this.teams[side];
     const direction = side === "home" ? 1 : -1;
@@ -120,8 +123,8 @@ function updateDynamicTargets() {
       }
       if (player.position === "GK") {
         const [minX, maxX] = side === "home" ? [5, 16] : [84, 95];
-        const targetX = !this.passReception && Number.isFinite(this.ball.targetX) && hasBall && player.id === this.ball.holderId ? this.ball.targetX : baseX + (this.ball.x - baseX) * 0.025 + Math.cos(phase) * 0.35;
-        const targetY = !this.passReception && Number.isFinite(this.ball.targetY) && hasBall && player.id === this.ball.holderId ? this.ball.targetY : 50 + (this.ball.y - 50) * 0.16 + Math.sin(phase) * 0.45;
+        const targetX = !this.passReception && Number.isFinite(this.ball.targetX) && hasBall && player.id === this.ball.holderId ? this.ball.targetX : baseX + (this.ball.x - baseX) * 0.025 + Math.cos(phase) * 0.35 * weaveIntensity;
+        const targetY = !this.passReception && Number.isFinite(this.ball.targetY) && hasBall && player.id === this.ball.holderId ? this.ball.targetY : 50 + (this.ball.y - 50) * 0.16 + Math.sin(phase) * 0.45 * weaveIntensity;
         player.targetX = clamp(targetX, minX, maxX);
         player.targetY = clamp(targetY, 34, 66);
         continue;
@@ -131,13 +134,40 @@ function updateDynamicTargets() {
         player.targetY = clamp(this.ball.targetY, 4, 96);
         continue;
       }
+      if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
+        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
+        const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
+        const startX = this.carryTracker?.startX ?? holder.x;
+        const driftX = direction * Math.min(carryTicks * 0.05, 6);
+        player.targetX = clamp(startX + driftX + Math.cos(phase) * 1.5, 4, 96);
+        player.targetY = clamp(holder.y + Math.sin(phase * 1.35) * 1.5, 4, 96);
+        continue;
+      }
+      if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
+        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
+        const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
+        const startX = this.carryTracker?.startX ?? holder.x;
+        const driftX = direction * Math.min(carryTicks * 0.05, 6);
+        player.targetX = clamp(startX + driftX + Math.cos(phase) * 1.5, 4, 96);
+        player.targetY = clamp(holder.y + Math.sin(phase * 1.35) * 1.5, 4, 96);
+        continue;
+      }
+      if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
+        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
+        const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
+        const startX = this.carryTracker?.startX ?? holder.x;
+        const driftX = direction * Math.min(carryTicks * 0.05, 6);
+        player.targetX = clamp(startX + driftX + Math.cos(phase) * 1.5, 4, 96);
+        player.targetY = clamp(holder.y + Math.sin(phase * 1.35) * 1.5, 4, 96);
+        continue;
+      }
       const roleDepth = { CB: 0, RB: 2, LB: 2, DM: 4, CM: 6, AM: 10, RW: 12, LW: 12, ST: 14 }[player.position] ?? 4;
       const roleWidth = ["RW", "LW"].includes(player.position) ? 3.4 : ["RB", "LB"].includes(player.position) ? 2.4 : 1.6;
       if (hasBall) {
         const supportX = (5 + roleDepth) * direction;
         const laneY = baseY < 50 ? -attackWidthShift : baseY > 50 ? attackWidthShift : 0;
-        const weaveX = Math.cos(phase) * 1.8;
-        const weaveY = Math.sin(phase * 1.35) * roleWidth;
+        const weaveX = Math.cos(phase) * 1.8 * weaveIntensity;
+        const weaveY = Math.sin(phase * 1.35) * roleWidth * weaveIntensity;
         let targetX = this.onsideSupportTargetX(side, baseX + pressShift * direction + supportX + (this.ball.x - baseX) * 0.08 + weaveX, this.ball.x, secondLastLine, this.supportDepthMargin(player));
         let targetY = baseY + laneY + (this.ball.y - baseY) * 0.08 + weaveY;
         if (holder && player.id !== holder.id) {
@@ -148,13 +178,14 @@ function updateDynamicTargets() {
         continue;
       }
       const defensiveMobility = this.defensiveRoleMobility(player);
-      let targetX = baseX + (pressShift + defensiveLineShift) * direction * defensiveMobility.shapeShift + (pressurePoint.x - baseX) * defensiveBallBias * defensiveMobility.ballShift + Math.cos(phase) * 0.7;
-      let targetY = baseY + (pressurePoint.y - baseY) * defensiveWidthBias + (50 - baseY) * defensiveCenterBias + Math.sin(phase * 1.35) * roleWidth * 0.45;
+      let targetX = baseX + (pressShift + defensiveLineShift) * direction * defensiveMobility.shapeShift + (pressurePoint.x - baseX) * defensiveBallBias * defensiveMobility.ballShift + Math.cos(phase) * 0.7 * weaveIntensity;
+      let targetY = baseY + (pressurePoint.y - baseY) * defensiveWidthBias + (50 - baseY) * defensiveCenterBias + Math.sin(phase * 1.35) * roleWidth * 0.45 * weaveIntensity;
       const presserIndex = pressers.indexOf(player.id);
       if (presserIndex !== -1) {
         const tightGap = team.tactics.pressingIntensity === "high" ? 3.6 : team.tactics.pressingIntensity === "low" ? 6.4 : 4.8;
         const coverGap = team.tactics.pressingIntensity === "high" ? 6.8 : team.tactics.pressingIntensity === "low" ? 10 : 8.4;
-        const pressureGap = presserIndex === 0 ? tightGap : coverGap;
+        // 逼抢距离做呼吸式波动，使防守球员持续上抢-回退，避免贴身后静止
+        const pressureGap = (presserIndex === 0 ? tightGap : coverGap) + Math.sin(phase) * 0.8;
         const channelOffset = presserIndex === 0 ? this.pressLaneOffset(player, pressurePoint) : baseY < pressurePoint.y ? -4 : 4;
         const heightBoost = team.tactics.pressingHeight === "high" ? 0.06 : team.tactics.pressingHeight === "low" ? -0.08 : 0;
         const pressureWeight = clamp(pressureStrength - presserIndex * 0.18 + heightBoost, 0.35, 0.82);
