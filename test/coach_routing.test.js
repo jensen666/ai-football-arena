@@ -20,8 +20,8 @@ function withMockFetch(handler) {
 
 test("resolveChatEndpoint 自动补全 chat completions 路径", () => {
   assert.equal(resolveChatEndpoint({ endpoint: "" }), "");
-  assert.equal(resolveChatEndpoint({ endpoint: "https://api.example.com/v1" }), "https://api.example.com/v1/chat/completions");
-  assert.equal(resolveChatEndpoint({ endpoint: "https://api.example.com/v1/" }), "https://api.example.com/v1/chat/completions");
+  assert.equal(resolveChatEndpoint({ endpoint: "https://api.earnrmb.online/v1" }), "https://api.earnrmb.online/v1/chat/completions");
+  assert.equal(resolveChatEndpoint({ endpoint: "https://api.earnrmb.online/v1/" }), "https://api.earnrmb.online/v1/chat/completions");
   assert.equal(resolveChatEndpoint({ endpoint: "https://api.deepseek.com/chat/completions" }), "https://api.deepseek.com/chat/completions");
   assert.equal(resolveChatEndpoint({ endpoint: "https://api.deepseek.com/chat/completions/" }), "https://api.deepseek.com/chat/completions");
 });
@@ -29,13 +29,13 @@ test("resolveChatEndpoint 自动补全 chat completions 路径", () => {
 test("callCoach 在 provider=local 但有 endpoint 时调用真实模型而非规则教练", async () => {
   const { calls, restore } = withMockFetch(() => ({ ok: true, json: async () => ({ choices: [{ message: { content: "{}" } }] }) }));
   try {
-    const config = { homeCoach: { provider: "local", model: "mimo-v2.5", endpoint: "https://api.example.com/v1", api_key: "sk-test-routing" }, awayCoach: { provider: "local", model: "rules-coach" }, match: { seed: "routing" } };
+    const config = { homeCoach: { provider: "local", model: "mimo-v2.5", endpoint: "https://api.earnrmb.online/v1", api_key: "sk-test-routing" }, awayCoach: { provider: "local", model: "rules-coach" }, match: { seed: "routing" } };
     const engine = new MatchEngine(config, createRng("routing"));
     engine.start();
     const orchestrator = new CoachOrchestrator(engine, config);
     await orchestrator.callCoach("home", { summary: {} }, new AbortController().signal);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "https://api.example.com/v1/chat/completions");
+    assert.equal(calls[0].url, "https://api.earnrmb.online/v1/chat/completions");
     assert.match(calls[0].options.headers.Authorization, /^Bearer sk-test-routing$/);
     assert.ok(calls[0].options.body.includes("\"messages\""));
   } finally {
@@ -65,9 +65,9 @@ test("updateConfig 运行时热更新进行中比赛的 orchestrator 配置", as
     const controller = new MatchController();
     await controller.init();
     controller.orchestrator = { config: null };
-    await controller.updateConfig({ homeCoach: { provider: "mimo", model: "mimo-v2.5", endpoint: "https://api.example.com/v1", api_key: "sk-hot-update" }, awayCoach: { provider: "local", model: "rules-coach" }, match: {} });
+    await controller.updateConfig({ homeCoach: { provider: "mimo", model: "mimo-v2.5", endpoint: "https://api.earnrmb.online/v1", api_key: "sk-hot-update" }, awayCoach: { provider: "local", model: "rules-coach" }, match: {} });
     assert.equal(controller.orchestrator.config, controller.config);
-    assert.equal(controller.config.homeCoach.endpoint, "https://api.example.com/v1");
+    assert.equal(controller.config.homeCoach.endpoint, "https://api.earnrmb.online/v1");
     assert.equal(controller.config.homeCoach.api_key, "sk-hot-update");
   } finally {
     if (original === null) await rm(CONFIG_PATH, { force: true });

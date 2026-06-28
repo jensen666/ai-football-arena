@@ -155,6 +155,12 @@ export class MatchController {
     return this.currentPayload();
   }
 
+  /** 按 replayId 获取已完成的回放片段。 */
+  getReplay(replayId) {
+    if (!this.engine) return null;
+    return this.engine.getReplay(replayId);
+  }
+
   /** 完成报告生成。 */
   async finishIfNeeded() {
     if (!this.engine || this.engine.reportPaths) return this.currentPayload();

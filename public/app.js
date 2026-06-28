@@ -1,4 +1,4 @@
-import { clearVisualEffects, cloneDrawState, drawPitch, initPitchRenderer, mockState, queueVisualEffect } from "./pitchRenderer.js";
+import { clearVisualEffects, cloneDrawState, drawPitch, drawReplayFrame, initPitchRenderer, mockState, queueVisualEffect } from "./pitchRenderer.js";
 
 const canvas = document.getElementById("pitchCanvas");
 const ui = collectUi();
@@ -16,10 +16,13 @@ let pendingCoachDashboard = null;
 let coachSummaryMatchId = null;
 let lastCoachSummaries = { home: null, away: null };
 let commentaryFeed = [];
+let lastMatchState = null;
 let fps = 60;
 let frameTimes = [];
 const reducedMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 const COMMENTARY_LIMIT = 12;
+const FRAME_INTERVAL_MS = 1000 / 30;
+const replayState = { frames: [], frameIndex: 0, isPlaying: false, rafId: null, lastFrameTime: 0, baseTime: 0 };
 window.__footballArenaDebug = { fps, latestState: null, playerCount: 0, ballVisible: false, commentaryCount: 0, latestCommentary: null, visualEffectCount: 0 };
 initPitchRenderer(canvas, window.__footballArenaDebug);
 
@@ -42,7 +45,11 @@ function collectUi() {
     settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), homeKeyStatus: document.getElementById("homeKeyStatus"), awayKeyStatus: document.getElementById("awayKeyStatus"), testHomeBtn: document.getElementById("testHomeBtn"), testAwayBtn: document.getElementById("testAwayBtn"),
     coachDashboard: document.getElementById("coachDashboard"), tacticPanel: document.getElementById("tacticPanel"), modelStats: document.getElementById("modelStats"), commentaryFeed: document.getElementById("commentaryFeed"), eventTimeline: document.getElementById("eventTimeline"), matchStats: document.getElementById("matchStats"), reportStatus: document.getElementById("reportStatus"),
     reportModal: document.getElementById("reportModal"), reportClose: document.getElementById("reportClose"), reportContent: document.getElementById("reportContent"),
-    preMatchOverlay: document.getElementById("preMatchOverlay"), preMatchTitle: document.getElementById("preMatchTitle"), preMatchHome: document.getElementById("preMatchHome"), preMatchAway: document.getElementById("preMatchAway")
+    preMatchOverlay: document.getElementById("preMatchOverlay"), preMatchTitle: document.getElementById("preMatchTitle"), preMatchHome: document.getElementById("preMatchHome"), preMatchAway: document.getElementById("preMatchAway"),
+    replayBtn: document.getElementById("replayBtn"), replayListModal: document.getElementById("replayListModal"), replayListClose: document.getElementById("replayListClose"),
+    replayList: document.getElementById("replayList"), replayEmpty: document.getElementById("replayEmpty"),
+    replayPlayerModal: document.getElementById("replayPlayerModal"), replayPlayerClose: document.getElementById("replayPlayerClose"),
+    replayPlayerTitle: document.getElementById("replayPlayerTitle"), replayCanvas: document.getElementById("replayCanvas")
   };
 }
 
@@ -69,6 +76,12 @@ function bindEvents() {
   ui.restartBtn.addEventListener("click", restartMatch);
   ui.stopBtn.addEventListener("click", stopMatch);
   ui.reportBtn.addEventListener("click", openReport);
+  ui.replayBtn.addEventListener("click", openReplayList);
+  ui.replayListClose.addEventListener("click", closeReplayList);
+  ui.replayListModal.addEventListener("click", (event) => { if (event.target === ui.replayListModal) closeReplayList(); });
+  ui.replayPlayerClose.addEventListener("click", closeReplayPlayer);
+  ui.replayPlayerModal.addEventListener("click", (event) => { if (event.target === ui.replayPlayerModal) closeReplayPlayer(); });
+  document.addEventListener("keydown", handleReplayKeydown);
 }
 
 /** 读取本地配置。 */
@@ -117,6 +130,7 @@ function resetClientMatchState(message = "当前没有正在运行的比赛。")
   ui.eventTimeline.innerHTML = "<div class=\"event\"><strong>--</strong>等待比赛事件</div>";
   ui.matchStats.innerHTML = "";
   ui.reportStatus.textContent = message;
+  lastMatchState = null;
   window.__footballArenaDebug.latestState = null;
   updateControls();
 }
@@ -232,6 +246,113 @@ async function openReport() {
   openModal(ui.reportModal);
 }
 
+/** 打开回放列表弹窗。 */
+function openReplayList() {
+  renderReplayList();
+  openModal(ui.replayListModal);
+}
+
+/** 关闭回放列表弹窗。 */
+function closeReplayList() {
+  closeModal(ui.replayListModal);
+}
+
+/** 渲染回放列表。 */
+function renderReplayList() {
+  const replays = latest?.replays || [];
+  if (!replays.length) {
+    ui.replayList.innerHTML = "";
+    ui.replayEmpty.style.display = "block";
+    return;
+  }
+  ui.replayEmpty.style.display = "none";
+  ui.replayList.innerHTML = replays.map((replay) => {
+    const sideClass = replay.team_id === "home" ? "home" : "away";
+    const teamLabel = replay.team_id === "home" ? "主队" : "客队";
+    return `<div class="replay-list-item" data-replay-id="${escapeHtml(replay.replay_id)}">
+      <span class="replay-time">${formatClock(replay.game_time)}</span>
+      <span class="replay-score">${replay.score_after.home} - ${replay.score_after.away}</span>
+      <span class="replay-scorer ${sideClass}">${teamLabel} · ${escapeHtml(replay.player_name)}</span>
+      <span class="replay-play">▶</span>
+    </div>`;
+  }).join("");
+  ui.replayList.querySelectorAll(".replay-list-item").forEach((item) => {
+    item.addEventListener("click", () => playReplay(item.dataset.replayId));
+  });
+}
+
+/** 播放指定回放。 */
+async function playReplay(replayId) {
+  try {
+    const data = await fetchJson(`/api/match/replay/${replayId}`);
+    const replay = data.replay;
+    if (!replay?.frames?.length) return;
+    closeReplayList();
+    ui.replayPlayerTitle.textContent = `进球回放 · ${formatClock(replay.game_time)} ${escapeHtml(replay.player_name)}破门`;
+    openModal(ui.replayPlayerModal);
+    startReplayPlayback(replay.frames);
+  } catch (error) {
+    ui.reportStatus.textContent = `加载回放失败：${error.message}`;
+  }
+}
+
+/** 开始按 30fps 顺序播放回放帧。 */
+function startReplayPlayback(frames) {
+  stopReplayPlayback();
+  replayState.frames = frames;
+  replayState.frameIndex = 0;
+  replayState.isPlaying = true;
+  replayState.lastFrameTime = 0;
+  replayState.baseTime = performance.now();
+  replayState.rafId = requestAnimationFrame(replayLoop);
+}
+
+/** 回放动画循环。 */
+function replayLoop(time) {
+  if (!replayState.isPlaying) return;
+  if (!replayState.lastFrameTime) replayState.lastFrameTime = time;
+  if (time - replayState.lastFrameTime < FRAME_INTERVAL_MS) {
+    replayState.rafId = requestAnimationFrame(replayLoop);
+    return;
+  }
+  replayState.lastFrameTime = time;
+  if (replayState.frameIndex >= replayState.frames.length) {
+    replayState.isPlaying = false;
+    return;
+  }
+  const frame = replayState.frames[replayState.frameIndex];
+  const frameTime = replayState.baseTime + replayState.frameIndex * FRAME_INTERVAL_MS;
+  drawReplayFrame(ui.replayCanvas, frame, frameTime);
+  replayState.frameIndex += 1;
+  if (replayState.frameIndex < replayState.frames.length) {
+    replayState.rafId = requestAnimationFrame(replayLoop);
+  }
+}
+
+/** 停止回放动画。 */
+function stopReplayPlayback() {
+  replayState.isPlaying = false;
+  if (replayState.rafId) cancelAnimationFrame(replayState.rafId);
+  replayState.rafId = null;
+}
+
+/** 关闭回放播放器并回到列表弹窗。 */
+function closeReplayPlayer() {
+  stopReplayPlayback();
+  closeModal(ui.replayPlayerModal);
+  openReplayList();
+}
+
+/** 全局 ESC 键处理：优先关闭播放器并回到列表，再关闭列表弹窗。 */
+function handleReplayKeydown(event) {
+  if (event.key !== "Escape") return;
+  if (ui.replayPlayerModal.classList.contains("open")) {
+    closeReplayPlayer();
+    return;
+  }
+  if (ui.replayListModal.classList.contains("open")) closeReplayList();
+}
+
 /** 连接 WebSocket。 */
 function connectWs(url) {
   const version = ++socketVersion;
@@ -314,6 +435,8 @@ function updateUi() {
   window.__footballArenaDebug.latestCommentary = commentaryFeed.at(-1) || null;
   renderPreMatch(latest);
   updateControls();
+
+  lastMatchState = latest.state;
 }
 
 /** 根据比赛状态更新控制按钮。 */
@@ -398,7 +521,7 @@ function formConfig() {
   return {
     homeCoach,
     awayCoach,
-    match: { homeFormation: formText(form, "homeFormation"), awayFormation: formText(form, "awayFormation"), matchMinutes: Number(form.get("matchMinutes")), seed: formText(form, "seed"), knockout: form.get("knockout") === "on" }
+    match: { homeFormation: formText(form, "homeFormation"), awayFormation: formText(form, "awayFormation"), matchMinutes: Number(form.get("matchMinutes")), goalPaceMultiplier: parseFloat(String(form.get("goalPaceMultiplier") || "1").replace(",", ".")) || 1, seed: formText(form, "seed"), knockout: form.get("knockout") === "on" }
   };
 }
 
@@ -425,6 +548,7 @@ function fillForm(nextConfig) {
   ui.settingsForm.homeFormation.value = nextConfig.match.homeFormation || "";
   ui.settingsForm.awayFormation.value = nextConfig.match.awayFormation || "";
   ui.settingsForm.matchMinutes.value = nextConfig.match.matchMinutes || 90;
+  ui.settingsForm.goalPaceMultiplier.value = Number.isFinite(nextConfig.match.goalPaceMultiplier) ? nextConfig.match.goalPaceMultiplier.toFixed(2) : "1.00";
   ui.settingsForm.seed.value = nextConfig.match.seed || "";
   ui.settingsForm.knockout.checked = Boolean(nextConfig.match.knockout);
 }
@@ -433,7 +557,7 @@ function fillForm(nextConfig) {
 function updateConfigSummary() {
   ui.homeName.textContent = coachDisplayName(config.homeCoach, "主队");
   ui.awayName.textContent = coachDisplayName(config.awayCoach, "客队");
-  ui.matchSummary.textContent = `${config.homeCoach.provider} vs ${config.awayCoach.provider} · ${config.match.matchMinutes || 90} 分钟 · 镜像阵容 · seed ${config.match.seed || "自动"}`;
+  ui.matchSummary.textContent = `${config.homeCoach.provider} vs ${config.awayCoach.provider} · ${config.match.matchMinutes || 90} 分钟 · 进球节奏 ${config.match.goalPaceMultiplier ?? 1} · 镜像阵容 · seed ${config.match.seed || "自动"}`;
 }
 
 /** 返回教练展示名称。 */

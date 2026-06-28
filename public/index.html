@@ -14,7 +14,10 @@
       <div class="scoreboard" aria-label="比分牌">
         <span id="homeName">主队</span>
         <strong><span id="homeScore">0</span> - <span id="awayScore">0</span></strong>
-        <span id="awayName">客队</span>
+        <span class="away-wrapper">
+          <span id="awayName">客队</span>
+          <button id="replayBtn" class="replay-btn" aria-label="进球回放">▶ 回放</button>
+        </span>
       </div>
       <div class="clock"><span id="matchState">未开始</span><span id="matchTime">00:00</span></div>
     </header>
@@ -115,6 +118,7 @@
             <label>主队阵型<select name="homeFormation"><option value="">由模型决定</option></select></label>
             <label>客队阵型<select name="awayFormation"><option value="">由模型决定</option></select></label>
             <label>比赛时长（分钟）<input name="matchMinutes" type="number" min="1" max="90" step="1" value="90" required></label>
+            <label title="数值越小射门越频繁、越容易进球；1 为默认正常节奏">进球节奏倍率（值越小进球越快，1 为正常）<input name="goalPaceMultiplier" type="text" inputmode="decimal" pattern="[0-9]*[.]?[0-9]+" min="0.01" max="5" value="1" required></label>
             <label>随机种子<input name="seed" value="20260620"></label>
             <label class="checkbox"><input type="checkbox" name="knockout"> 淘汰赛</label>
           </div>
@@ -136,6 +140,32 @@
         <button class="btn" id="reportClose">关闭</button>
       </div>
       <pre id="reportContent" class="report-content">暂无报告。</pre>
+    </div>
+  </div>
+
+  <div class="modal" id="replayListModal" aria-label="进球回放列表" aria-hidden="true">
+    <div class="modal-card replay-list-card">
+      <div class="modal-head">
+        <h2>进球回放</h2>
+        <button class="btn" id="replayListClose">关闭</button>
+      </div>
+      <div class="modal-body replay-list-body">
+        <div id="replayList" class="replay-list"></div>
+        <div id="replayEmpty" class="replay-empty">暂无进球回放</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="replayPlayerModal" aria-label="进球回放播放器" aria-hidden="true">
+    <div class="modal-card replay-player-card">
+      <div class="modal-head">
+        <h2 id="replayPlayerTitle">进球回放</h2>
+        <button class="btn" id="replayPlayerClose">关闭</button>
+      </div>
+      <div class="replay-player-body">
+        <canvas id="replayCanvas" width="1100" height="696" aria-label="进球回放画面"></canvas>
+        <p class="replay-hint">自动播放，无播放控制</p>
+      </div>
     </div>
   </div>
 

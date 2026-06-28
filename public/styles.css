@@ -26,6 +26,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .scoreboard { position: absolute; left: 50%; top: 50%; width: min(520px, calc(100% - 620px)); transform: translate(-50%, -50%); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px; color: var(--muted); }
 .scoreboard strong { color: var(--text); font-size: 28px; font-variant-numeric: tabular-nums; text-shadow: 0 0 22px rgba(244,208,111,.28); }
 .scoreboard span:first-child { text-align: right; }
+.away-wrapper { display: flex; align-items: center; justify-content: flex-start; gap: 10px; }
+.replay-btn { padding: 3px 10px; border: 1px solid var(--gold); border-radius: 8px; color: var(--gold); background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.replay-btn:hover { background: var(--gold); color: #081318; }
 .clock { grid-column: 3; justify-self: end; display: grid; gap: 2px; color: var(--gold); text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; }
 .clock span:first-child { color: var(--muted); font-size: 12px; font-weight: 600; }
 
@@ -87,6 +90,29 @@ input, select { min-height: 36px; width: 100%; border: 1px solid var(--line); bo
 .button-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .muted { color: var(--muted); }
 .report-content { margin: 0; padding: 18px; min-height: 520px; white-space: pre-wrap; color: var(--text); background: #081018; }
+
+.replay-list-card { width: min(520px, 100%); }
+.replay-list-body { padding: 0; }
+.replay-list { display: grid; gap: 1px; background: var(--line); }
+.replay-empty { padding: 32px 18px; text-align: center; color: var(--muted); font-size: 14px; }
+.replay-list-item { display: grid; grid-template-columns: 72px 64px 1fr auto; gap: 12px; align-items: center; padding: 14px 18px; background: var(--panel); cursor: pointer; transition: background .12s ease; }
+.replay-list-item:hover { background: #162637; }
+.replay-time { color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; }
+.replay-score { color: var(--text); font-weight: 700; text-align: center; }
+.replay-scorer { color: var(--muted); font-size: 13px; }
+.replay-scorer.home { color: var(--home); }
+.replay-scorer.away { color: var(--away); }
+.replay-play { color: var(--gold); font-size: 14px; }
+
+.replay-player-card { width: min(1120px, 100%); }
+.replay-player-body { padding: 0; display: grid; place-items: center; background: #081018; }
+#replayCanvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 180px); background: var(--field); border-radius: 0 0 12px 12px; }
+.replay-hint { margin: 0; padding: 10px 18px; color: var(--muted); font-size: 12px; text-align: center; background: var(--panel); width: 100%; }
+
+@media (max-width: 1100px) {
+  .away-wrapper { justify-content: center; }
+  #replayCanvas { max-height: none; }
+}
 
 @media (max-width: 1100px) {
   .app-shell { height: auto; min-height: 100vh; overflow: visible; grid-template-rows: auto auto auto; }
@@ -190,3 +216,5 @@ input, select { min-height: 36px; width: 100%; border: 1px solid var(--line); bo
   .pre-match-spinner { animation: none; border-top-color: rgba(244,208,111,.5); }
   .pre-match-overlay { transition: none; }
 }
+
+/* 进球特效已移除，避免干扰比赛画面。 */

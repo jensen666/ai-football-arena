@@ -1,4 +1,5 @@
 node_modules/
+.venv/
 config/app.json
 config/*.local.json
 secrets/
@@ -11,3 +12,5 @@ cache/
 .publish/
 .DS_Store
 *.log
+e2e_evidence/
+e2e-football-*.png

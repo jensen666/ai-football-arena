@@ -23,7 +23,7 @@ export function defaultConfig() {
   return {
     homeCoach: { provider: "local", name: "主队", model: "rules-coach", endpoint: "", api_key_ref: "", api_key_set: false, free_strategy_prompt: "" },
     awayCoach: { provider: "local", name: "客队", model: "rules-coach", endpoint: "", api_key_ref: "", api_key_set: false, free_strategy_prompt: "" },
-    match: { seed: "20260620", knockout: false, homeFormation: "", awayFormation: "", matchMinutes: DEFAULT_MATCH_MINUTES, allowHalfTimeAdjustments: true, autoSubstitution: true }
+    match: { seed: "20260620", knockout: false, homeFormation: "", awayFormation: "", matchMinutes: DEFAULT_MATCH_MINUTES, goalPaceMultiplier: 1, allowHalfTimeAdjustments: true, autoSubstitution: true }
   };
 }
 
@@ -77,6 +77,7 @@ export function mergeConfig(input = {}) {
   match.homeFormation = String(match.homeFormation || "").trim();
   match.awayFormation = String(match.awayFormation || "").trim();
   match.matchMinutes = normalizeMatchMinutes(match.matchMinutes);
+  match.goalPaceMultiplier = Number.isFinite(match.goalPaceMultiplier) && match.goalPaceMultiplier > 0 ? match.goalPaceMultiplier : 1;
   return {
     homeCoach: normalizeCoachConfig({ ...base.homeCoach, ...(input.homeCoach || {}) }),
     awayCoach: normalizeCoachConfig({ ...base.awayCoach, ...(input.awayCoach || {}) }),

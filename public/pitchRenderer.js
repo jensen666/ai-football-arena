@@ -3,7 +3,9 @@ let ctx = null;
 let debugTarget = {};
 let visualEffects = [];
 const seenVisualEffectIds = new Set();
-const lastPlayerAngles = new Map();
+let lastPlayerAngles = new Map();
+const replayPlayerAngles = new Map();
+const goalNetTimes = new Map();
 
 const VISUAL_EFFECT_MS = 1600;
 const ACTION_EFFECT_MS = 900;
@@ -42,27 +44,52 @@ export function queueVisualEffect(event, recentEvents = []) {
 }
 
 export function drawPitch(state, time = performance.now()) {
-  const width = canvas.width;
-  const height = canvas.height;
-  ctx.clearRect(0, 0, width, height);
-  drawField(width, height);
-  drawVisualEffects(width, height, time);
-  const drawState = state || mockState();
-  drawReceptionTarget(drawState.ball, width, height, time);
-  const players = ["home", "away"]
-    .flatMap((side) => drawState.teams[side].players.map((player) => ({ player, side })))
-    .sort((left, right) => left.player.y - right.player.y);
-  for (const { player, side } of players) {
-    const isPassReceiver = drawState.ball?.pendingHolderTeam === side && drawState.ball?.pendingHolderId === player.id;
-    const isHolder = !drawState.ball?.inFlight && drawState.ball?.holderTeam === side && drawState.ball?.holderId === player.id;
-    drawPlayer(player, side, width, height, isHolder, time, isPassReceiver);
+  drawPitchTo(canvas, ctx, state, time, { skipEffects: false });
+}
+
+export function drawReplayFrame(targetCanvas, state, time = performance.now()) {
+  const targetCtx = targetCanvas.getContext("2d");
+  drawPitchTo(targetCanvas, targetCtx, state, time, { skipEffects: true });
+}
+
+function drawPitchTo(targetCanvas, targetCtx, state, time, options = {}) {
+  const savedCanvas = canvas;
+  const savedCtx = ctx;
+  const savedAngles = lastPlayerAngles;
+  canvas = targetCanvas;
+  ctx = targetCtx;
+  if (options.skipEffects) lastPlayerAngles = replayPlayerAngles;
+  try {
+    const width = canvas.width;
+    const height = canvas.height;
+    const drawState = state || mockState();
+    ctx.clearRect(0, 0, width, height);
+    drawField(width, height, drawState, time);
+    if (!options.skipEffects) drawVisualEffects(width, height, time);
+    drawReceptionTarget(drawState.ball, width, height, time);
+    const players = ["home", "away"]
+      .flatMap((side) => drawState.teams[side].players.map((player) => ({ player, side })))
+      .sort((left, right) => left.player.y - right.player.y);
+    for (const { player, side } of players) {
+      const isPassReceiver = drawState.ball?.pendingHolderTeam === side && drawState.ball?.pendingHolderId === player.id;
+      const isHolder = !drawState.ball?.inFlight && drawState.ball?.holderTeam === side && drawState.ball?.holderId === player.id;
+      drawPlayer(player, side, width, height, drawState, isHolder, time, isPassReceiver);
+    }
+    drawBall(drawState.ball, width, height, time);
+  } finally {
+    canvas = savedCanvas;
+    ctx = savedCtx;
+    lastPlayerAngles = savedAngles;
   }
-  drawBall(drawState.ball, width, height, time);
 }
 
 /** 绘制动作事件的球路特效。 */
 function drawVisualEffects(width, height, time) {
   visualEffects = visualEffects.filter((effect) => time - effect.startedAt <= VISUAL_EFFECT_MS);
+  const activeIds = new Set(visualEffects.map((effect) => effect.id));
+  for (const id of goalNetTimes.keys()) {
+    if (!activeIds.has(id)) goalNetTimes.delete(id);
+  }
   debugTarget.visualEffectCount = visualEffects.length;
   for (const effect of visualEffects) drawTrajectoryEffect(effect, width, height, time);
 }
@@ -81,14 +108,38 @@ function drawTrajectoryEffect(effect, width, height, time) {
 
   ctx.save();
   ctx.globalAlpha = 0.22 + fade * 0.42;
-  ctx.strokeStyle = `rgba(${color},${shot ? 0.82 : 0.72})`;
-  ctx.lineWidth = shot ? 3.8 : highBall ? 3 : 2.2;
+  ctx.strokeStyle = `rgba(${color},${shot ? 0.95 : 0.72})`;
+  if (shot) {
+    ctx.lineWidth = 6 * end.scale;
+    ctx.shadowColor = `rgba(${color},0.95)`;
+    ctx.shadowBlur = 16 * end.scale;
+  } else {
+    ctx.lineWidth = highBall ? 3 : 2.2;
+    ctx.shadowBlur = 0;
+  }
   ctx.setLineDash(highBall ? [12, 9] : []);
   ctx.beginPath();
   ctx.moveTo(start.x, start.y);
   ctx.lineTo(end.x, end.y);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+
+  // 射门时沿轨迹绘制火花尾迹，增强速度感。
+  if (shot) {
+    const sparkCount = 8;
+    for (let i = 0; i < sparkCount; i += 1) {
+      const t = (age * 1.4 - i * 0.08) % 1;
+      if (t < 0 || t > 1) continue;
+      const sparkX = lerp(start.x, end.x, t);
+      const sparkY = lerp(start.y, end.y, t);
+      const sparkSize = (1.2 + Math.sin(time / 60 + i) * 0.6) * end.scale * fade * (1 - t * 0.35);
+      ctx.fillStyle = `rgba(255, 220, 120, ${0.7 * fade * (1 - t * 0.4)})`;
+      ctx.beginPath();
+      ctx.arc(sparkX, sparkY, Math.max(0.5, sparkSize), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   ctx.globalAlpha = 0.2 + fade * 0.32;
   ctx.strokeStyle = `rgba(${color},0.58)`;
@@ -118,7 +169,7 @@ function drawReceptionTarget(ball, width, height, time = performance.now()) {
 }
 
 /** 绘制场地。 */
-function drawField(width, height) {
+function drawField(width, height, state = null, time = performance.now()) {
   for (let index = 0; index < 12; index += 1) {
     ctx.fillStyle = index % 2 ? "#195b37" : "#216d43";
     projectedPolygon([
@@ -140,27 +191,29 @@ function drawField(width, height) {
   projectedBox(94, 37, 6, 26, width, height);
   projectedDot(11, 50, width, height);
   projectedDot(89, 50, width, height);
-  drawGoal(0, 50, -1, width, height);
-  drawGoal(100, 50, 1, width, height);
+  drawGoal(0, 50, -1, width, height, state, time);
+  drawGoal(100, 50, 1, width, height, state, time);
   ctx.restore();
 }
 
 /** 绘制球员。 */
-function drawPlayer(player, side, width, height, isHolder = false, time = performance.now(), isPassReceiver = false) {
+function drawPlayer(player, side, width, height, state, isHolder = false, time = performance.now(), isPassReceiver = false) {
   const point = toCanvas(player, width, height);
   const unit = (player.position === "GK" ? 15.2 : 13.2) * point.scale;
-  const pose = playerPose(player, side, width, height, time);
+  const pose = playerPose(player, side, width, height, state, time);
+  const jumpOffset = (pose.jump || 0) * point.scale;
+  const shadowShrink = Math.max(0.45, 1 - (pose.jump || 0) / 24);
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,.28)";
   ctx.beginPath();
-  ctx.ellipse(point.x, point.y + unit * 0.1, unit * 1.12, unit * 0.28, 0, 0, Math.PI * 2);
+  ctx.ellipse(point.x, point.y + unit * 0.1, unit * 1.12 * shadowShrink, unit * 0.28 * shadowShrink, 0, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.translate(point.x, point.y);
   ctx.shadowColor = "rgba(0,0,0,.42)";
   ctx.shadowBlur = 8 * point.scale;
   ctx.save();
-  ctx.translate(0, -unit * 1.46);
+  ctx.translate(0, -unit * 1.46 - jumpOffset);
   drawMascotLimbs(unit, pose, side, player.position === "GK");
   drawMascotBody(unit, pose, side, player.position === "GK");
   drawMascotHead(unit, pose, side);
@@ -192,8 +245,8 @@ function drawPlayer(player, side, width, height, isHolder = false, time = perfor
 }
 
 /** 返回球员当前姿态。 */
-function playerPose(player, side, width, height, time = performance.now()) {
-  const action = activePlayerAction(player, side, time);
+function playerPose(player, side, width, height, state, time = performance.now()) {
+  const action = activePlayerAction(player, side, state, time);
   const base = movementPose(player, side, width, height, time);
   if (!action) return base;
   const pulse = Math.sin(Math.PI * action.age);
@@ -201,6 +254,11 @@ function playerPose(player, side, width, height, time = performance.now()) {
   const actionKey = playerActionKey(action);
   const actionSpec = PLAYER_ACTION_SYSTEM[actionKey] || PLAYER_ACTION_SYSTEM.idle;
   const receiving = action.role === "target";
+  let jump = 0;
+  if (actionKey === "celebrate") {
+    const bounce = Math.abs(Math.sin(time * 0.015 + player.id * 0.8));
+    jump = bounce * 12;
+  }
   return {
     angle: receiving ? actionAngle + Math.PI : actionAngle,
     actionKey,
@@ -212,7 +270,8 @@ function playerPose(player, side, width, height, time = performance.now()) {
     crouch: actionSpec.crouch * pulse,
     run: base.run * (1 - pulse * 0.5),
     role: action.role,
-    type: action.type
+    type: action.type,
+    jump
   };
 }
 
@@ -262,24 +321,50 @@ function playerActionKey(action) {
   if (action.role === "target" && ["pass_completed", "pass_intercepted"].includes(action.type)) return "receive";
   if (["pass_completed", "pass_intercepted"].includes(action.type)) return "pass";
   if (["shot"].includes(action.type)) return "shot";
-  if (["goal"].includes(action.type)) return action.role === "actor" ? "celebrate" : "receive";
+  if (["goal"].includes(action.type)) return ["actor", "teammate"].includes(action.role) ? "celebrate" : "receive";
   if (["tackle_won"].includes(action.type)) return action.role === "actor" ? "tackle" : "receive";
   if (["foul"].includes(action.type)) return "foul";
   return "idle";
 }
 
+/** 判断足球是否已经越过指定球门线并进入球网。 */
+function isBallInNet(effect, state) {
+  if (!state?.ball) return false;
+  const endX = effect.trajectory?.end?.x;
+  if (!Number.isFinite(endX)) return false;
+  const ballX = state.ball.x;
+  if (endX > 100) return ballX >= 99.5;
+  if (endX < 0) return ballX <= 0.5;
+  return false;
+}
+
 /** 最近动作事件对球员产生的姿态。 */
-function activePlayerAction(player, side, time = performance.now()) {
+function activePlayerAction(player, side, state = null, time = performance.now()) {
   let selected = null;
   for (const effect of visualEffects) {
-    const age = (time - effect.startedAt) / ACTION_EFFECT_MS;
-    if (age < 0 || age > 1) continue;
+    const duration = effect.type === "goal" ? 2500 : ACTION_EFFECT_MS;
+    const rawAge = (time - effect.startedAt) / duration;
+    if (rawAge < 0 || rawAge > 1) continue;
     const actorMatch = effect.actor?.team_id === side && effect.actor?.player_id === player.id;
     const targetMatch = effect.target?.team_id === side && effect.target?.player_id === player.id;
-    if (!actorMatch && !targetMatch) continue;
-    selected = { ...effect, age, role: actorMatch ? "actor" : "target" };
+    const teammateCelebrate = effect.type === "goal" && effect.actor?.team_id === side;
+    if (!actorMatch && !targetMatch && !teammateCelebrate) continue;
+    let role = "target";
+    if (actorMatch) role = "actor";
+    else if (teammateCelebrate) role = "teammate";
+    selected = { ...effect, age: rawAge, role };
   }
   if (!selected) return null;
+  // 进球庆祝必须等球真正入网后才开始，避免球刚踢出球员就跳跃。
+  if (selected.type === "goal" && ["actor", "teammate"].includes(selected.role)) {
+    if (!isBallInNet(selected, state)) return null;
+    if (!goalNetTimes.has(selected.id)) {
+      goalNetTimes.set(selected.id, time);
+    }
+    const netTime = goalNetTimes.get(selected.id);
+    selected.age = (time - netTime) / 2500;
+    if (selected.age < 0 || selected.age > 1) return null;
+  }
   return { ...selected, angle: effectAngle(selected) };
 }
 
@@ -449,7 +534,38 @@ function drawBall(ball, width, height, time = performance.now()) {
   const ballY = point.y - lift;
   const radius = (5.2 + air * 4.4) * point.scale;
   const shadowScale = 1 - air * 0.58;
+  const isShot = ["shot", "goal_shot"].includes(ball?.flightKind) || visualEffects.some((effect) =>
+    ["shot", "goal_shot"].includes(effect.trajectory?.kind) && time - effect.startedAt <= VISUAL_EFFECT_MS
+  );
+
   ctx.save();
+  // 射门时绘制流星般的红色残影尾迹。
+  if (isShot && ball?.inFlight && Number.isFinite(ball.flightStartX)) {
+    const start = { x: ball.flightStartX, y: ball.flightStartY };
+    const end = { x: ball.flightEndX, y: ball.flightEndY };
+    const progress = clampView(trajectoryProgress(ball, start, end), 0, 1);
+    const trailLength = 5;
+    for (let i = 1; i <= trailLength; i += 1) {
+      const ratio = i / (trailLength + 1);
+      const trailProgress = Math.max(0, progress - ratio * 0.18);
+      const trailX = lerp(start.x, end.x, trailProgress);
+      const trailY = lerp(start.y, end.y, trailProgress);
+      const trailPoint = toCanvas({ x: trailX, y: trailY }, width, height);
+      const trailAir = Number(ball.flightHeight || 0) * Math.sin(Math.PI * trailProgress);
+      const trailLift = (10 + 30 * trailPoint.scale) * trailAir;
+      const trailCanvasY = trailPoint.y - trailLift;
+      const trailRadius = radius * (1 - ratio * 0.35);
+      const opacity = 0.45 * (1 - ratio);
+      ctx.fillStyle = `rgba(255, 59, 48, ${opacity})`;
+      ctx.shadowColor = "rgba(255, 59, 48, 0.7)";
+      ctx.shadowBlur = 10 * (1 - ratio) * trailPoint.scale;
+      ctx.beginPath();
+      ctx.arc(trailPoint.x, trailCanvasY, Math.max(0.5, trailRadius), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+
   ctx.fillStyle = `rgba(0,0,0,${0.34 - air * 0.16})`;
   ctx.beginPath();
   ctx.ellipse(point.x, point.y + radius * 0.32, radius * 1.22 * shadowScale, radius * 0.38 * shadowScale, 0, 0, Math.PI * 2);
@@ -464,18 +580,18 @@ function drawBall(ball, width, height, time = performance.now()) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
-  ctx.shadowColor = `rgba(248,245,233,${0.55 + air * 0.28})`;
-  ctx.shadowBlur = 8 + air * 14;
+  ctx.shadowColor = isShot ? `rgba(255, 59, 48, ${0.9 + air * 0.08})` : `rgba(248,245,233,${0.55 + air * 0.28})`;
+  ctx.shadowBlur = isShot ? 20 + air * 22 : 8 + air * 14;
   ctx.beginPath();
-  ctx.fillStyle = "#f8f5e9";
+  ctx.fillStyle = isShot ? "#ff3b30" : "#f8f5e9";
   ctx.arc(point.x, ballY, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = "#111";
+  ctx.strokeStyle = isShot ? "#7a0b00" : "#111";
   ctx.lineWidth = 1.6;
   ctx.stroke();
   ctx.beginPath();
-  ctx.fillStyle = "#111";
+  ctx.fillStyle = isShot ? "#5c0800" : "#111";
   ctx.arc(point.x + radius * 0.25, ballY - radius * 0.25, radius * 0.22, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
@@ -584,7 +700,7 @@ function distanceToSegment(point, start, end) {
   return Math.hypot((point.x ?? 0) - x, (point.y ?? 0) - y);
 }
 
-function drawGoal(x, y, side, width = canvas.width, height = canvas.height) {
+function drawGoal(x, y, side, width = canvas.width, height = canvas.height, state = null, time = performance.now()) {
   const backX = x + side * 5.2;
   const top = y - 11;
   const bottom = y + 11;
@@ -594,28 +710,57 @@ function drawGoal(x, y, side, width = canvas.width, height = canvas.height) {
   const backBottom = toCanvas({ x: backX, y: bottom }, width, height);
   const postScale = (frontTop.scale + frontBottom.scale + backTop.scale + backBottom.scale) / 4;
   const goalHeight = 24 * postScale;
+
   const raised = (point) => ({ x: point.x, y: point.y - goalHeight });
   const frontTopHigh = raised(frontTop);
   const frontBottomHigh = raised(frontBottom);
-  const backTopHigh = raised(backTop);
-  const backBottomHigh = raised(backBottom);
+
+  // 进球时高亮球门网，并产生球被击中网后的自然回弹动画。
+  let netFill = "rgba(244,208,111,.08)";
+  let netStroke = "rgba(244,255,239,.18)";
+  let netGlow = null;
+  let bulgeX = 0;
+  let bulgeY = 0;
+  if (state?.state === "goal_scored" && Math.abs((state.ball?.x ?? -999) - x) < 10) {
+    const goalEffect = visualEffects.find((effect) => effect.type === "goal");
+    const age = goalEffect ? clampView((time - goalEffect.startedAt) / VISUAL_EFFECT_MS, 0, 1) : 0.5;
+    const decay = Math.max(0, 1 - age);
+    const impact = Math.sin(Math.PI * age) * decay;
+    bulgeX = side * impact * 2.8 * postScale;
+    bulgeY = Math.sin(age * Math.PI * 3) * impact * 0.8 * postScale;
+    const highlight = 0.3 * decay;
+    netFill = `rgba(255, 215, 0, ${0.08 + highlight})`;
+    netStroke = `rgba(255, 215, 0, ${0.18 + highlight * 2})`;
+    netGlow = `rgba(255, 215, 0, ${0.4 * decay})`;
+  }
+
+  const backTopHigh = raised({ x: backTop.x + bulgeX, y: backTop.y + bulgeY });
+  const backBottomHigh = raised({ x: backBottom.x + bulgeX, y: backBottom.y + bulgeY });
+  const backTopBulged = { x: backTop.x + bulgeX, y: backTop.y + bulgeY };
+  const backBottomBulged = { x: backBottom.x + bulgeX, y: backBottom.y + bulgeY };
+
   ctx.save();
-  drawGoalNetPanel([frontTop, frontBottom, backBottom, backTop], "rgba(244,208,111,.08)", "rgba(244,255,239,.18)");
-  drawGoalNetPanel([frontTopHigh, frontBottomHigh, backBottomHigh, backTopHigh], "rgba(244,208,111,.12)", "rgba(244,255,239,.2)");
-  drawGoalNetPanel([frontTop, frontTopHigh, backTopHigh, backTop], "rgba(244,255,239,.07)", "rgba(244,255,239,.2)");
-  drawGoalNetPanel([frontBottom, frontBottomHigh, backBottomHigh, backBottom], "rgba(244,255,239,.07)", "rgba(244,255,239,.2)");
-  drawGoalNetPanel([backTop, backTopHigh, backBottomHigh, backBottom], "rgba(244,255,239,.05)", "rgba(244,255,239,.18)");
+  if (netGlow) {
+    ctx.shadowColor = netGlow;
+    ctx.shadowBlur = 14 * postScale;
+  }
+  drawGoalNetPanel([frontTop, frontBottom, backBottomBulged, backTopBulged], netFill, netStroke);
+  drawGoalNetPanel([frontTopHigh, frontBottomHigh, backBottomHigh, backTopHigh], netFill, netStroke);
+  drawGoalNetPanel([frontTop, frontTopHigh, backTopHigh, backTopBulged], netFill, netStroke);
+  drawGoalNetPanel([frontBottom, frontBottomHigh, backBottomHigh, backBottomBulged], netFill, netStroke);
+  drawGoalNetPanel([backTopBulged, backTopHigh, backBottomHigh, backBottomBulged], netFill, netStroke);
+  ctx.shadowBlur = 0;
 
   ctx.strokeStyle = "rgba(244,255,239,.28)";
   ctx.lineWidth = Math.max(1, 1.15 * postScale);
   for (let index = 1; index < 4; index += 1) {
     const amount = index / 4;
-    drawGoalFrameLine(lerpPoint(frontTop, backTop, amount), lerpPoint(frontBottom, backBottom, amount));
+    drawGoalFrameLine(lerpPoint(frontTop, backTopBulged, amount), lerpPoint(frontBottom, backBottomBulged, amount));
     drawGoalFrameLine(lerpPoint(frontTopHigh, backTopHigh, amount), lerpPoint(frontBottomHigh, backBottomHigh, amount));
   }
   for (let index = 1; index < 3; index += 1) {
     const amount = index / 3;
-    drawGoalFrameLine(lerpPoint(frontTop, frontBottom, amount), lerpPoint(backTop, backBottom, amount));
+    drawGoalFrameLine(lerpPoint(frontTop, frontBottom, amount), lerpPoint(backTopBulged, backBottomBulged, amount));
     drawGoalFrameLine(lerpPoint(frontTopHigh, frontBottomHigh, amount), lerpPoint(backTopHigh, backBottomHigh, amount));
   }
 
@@ -625,8 +770,8 @@ function drawGoal(x, y, side, width = canvas.width, height = canvas.height) {
   drawGoalFrameLine(frontTop, frontTopHigh);
   drawGoalFrameLine(frontBottom, frontBottomHigh);
   drawGoalFrameLine(frontTopHigh, frontBottomHigh);
-  drawGoalFrameLine(backTop, backTopHigh);
-  drawGoalFrameLine(backBottom, backBottomHigh);
+  drawGoalFrameLine(backTopBulged, backTopHigh);
+  drawGoalFrameLine(backBottomBulged, backBottomHigh);
   drawGoalFrameLine(backTopHigh, backBottomHigh);
   drawGoalFrameLine(frontTopHigh, backTopHigh);
   drawGoalFrameLine(frontBottomHigh, backBottomHigh);

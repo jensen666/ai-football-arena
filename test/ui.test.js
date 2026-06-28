@@ -60,8 +60,8 @@ test("前端绘制球员时不使用显示层重叠偏移", async () => {
   assert.equal(app.includes("occupied = new Map"), false);
   assert.equal(app.includes("point.x += Math.cos"), false);
   assert.equal(app.includes("point.y += Math.sin"), false);
-  assert.match(app, /drawPlayer\(player, side, width, height, isHolder, time, isPassReceiver\)/);
-  assert.match(app, /function drawPlayer\(player, side, width, height, isHolder = false, time = performance\.now\(\), isPassReceiver = false\) \{\n  const point = toCanvas\(player, width, height\);/);
+  assert.match(app, /drawPlayer\(player, side, width, height, drawState, isHolder, time, isPassReceiver\)/);
+  assert.match(app, /function drawPlayer\(player, side, width, height, state, isHolder = false, time = performance\.now\(\), isPassReceiver = false\) \{\n  const point = toCanvas\(player, width, height\);/);
 });
 
 /** 默认队名兜底不绑定具体模型品牌。 */
@@ -205,13 +205,15 @@ test("球场和比分按整页居中且底部面板不裁剪内容", async () =>
   assert.match(styles, /@media \(max-width: 1100px\) \{[\s\S]*#pitchCanvas \{[^}]*position: static;[^}]*width: min\(100%, 1120px\);[^}]*height: auto;[^}]*max-height: none;[^}]*transform: none;/);
 });
 
-test("设置表单支持比赛时长并提交到开始比赛配置", async () => {
+test("设置表单支持比赛时长、进球节奏倍率并提交到开始比赛配置", async () => {
   const [html, app] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFrontendSource()
   ]);
   assert.ok(html.includes("比赛时长（分钟）<input name=\"matchMinutes\" type=\"number\" min=\"1\" max=\"90\" step=\"1\" value=\"90\" required>"));
+  assert.ok(html.includes("进球节奏倍率（值越小进球越快，1 为正常）<input name=\"goalPaceMultiplier\" type=\"text\" inputmode=\"decimal\" pattern=\"[0-9]*[.]?[0-9]+\" min=\"0.01\" max=\"5\" value=\"1\" required>"));
   assert.ok(app.includes("matchMinutes: Number(form.get(\"matchMinutes\"))"));
+  assert.ok(app.includes("goalPaceMultiplier: parseFloat(String(form.get(\"goalPaceMultiplier\") || \"1\").replace(\",\", \".\")) || 1"));
   assert.ok(app.includes("if (!ui.settingsForm.checkValidity())"));
   assert.ok(app.includes("showSettingsValidationMessage();"));
   assert.ok(app.includes("function showSettingsValidationMessage()"));
@@ -219,6 +221,7 @@ test("设置表单支持比赛时长并提交到开始比赛配置", async () =>
   assert.ok(app.includes("ui.settingsMessage.textContent = \"请先修正比赛设置。\";"));
   assert.ok(app.includes("if (event.target !== ui.settingsModal) return;"));
   assert.ok(app.includes("ui.settingsForm.matchMinutes.value = nextConfig.match.matchMinutes || 90;"));
+  assert.ok(app.includes("ui.settingsForm.goalPaceMultiplier.value"));
   assert.ok(app.includes("${config.match.matchMinutes || 90} 分钟"));
 });
 
@@ -250,4 +253,50 @@ test("设置表单展示 API Key 保存状态", async () => {
   assert.ok(app.includes("awayKeyStatus: document.getElementById(\"awayKeyStatus\")"));
   assert.ok(app.includes("nextConfig.homeCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
   assert.ok(app.includes("nextConfig.awayCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
+});
+
+/** 比分牌新增回放入口，且不破坏原有三列网格布局。 */
+test("比分牌包含进球回放按钮且布局使用 flex 容器隔离", async () => {
+  const [html, app, styles] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFrontendSource(),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8")
+  ]);
+  assert.ok(html.includes('id="replayBtn"'));
+  assert.ok(html.includes('class="away-wrapper"'));
+  assert.ok(html.includes('aria-label="进球回放"'));
+  assert.ok(app.includes("replayBtn: document.getElementById(\"replayBtn\")"));
+  assert.ok(styles.includes(".away-wrapper"));
+  assert.ok(styles.includes(".replay-btn"));
+  assert.match(styles, /\.scoreboard \{[^}]*grid-template-columns:\s*1fr auto 1fr/);
+});
+
+/** 存在回放列表弹窗和回放播放器弹窗。 */
+test("存在进球回放列表弹窗与播放器弹窗", async () => {
+  const [html, app] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFrontendSource()
+  ]);
+  assert.ok(html.includes('id="replayListModal"'));
+  assert.ok(html.includes('id="replayPlayerModal"'));
+  assert.ok(html.includes('id="replayCanvas"'));
+  assert.ok(app.includes("replayListModal: document.getElementById(\"replayListModal\")"));
+  assert.ok(app.includes("replayPlayerModal: document.getElementById(\"replayPlayerModal\")"));
+  assert.ok(app.includes("replayCanvas: document.getElementById(\"replayCanvas\")"));
+});
+
+/** 前端渲染器支持独立 Canvas 回放，播放器支持 ESC 与 30fps 节流。 */
+test("前端渲染器支持回放 Canvas 且播放器实现 ESC 与帧率控制", async () => {
+  const [app, styles] = await Promise.all([
+    readFrontendSource(),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8")
+  ]);
+  assert.ok(app.includes("drawReplayFrame"));
+  assert.ok(app.includes("drawPitchTo"));
+  assert.ok(app.includes("FRAME_INTERVAL_MS"));
+  assert.ok(app.includes("handleReplayKeydown"));
+  assert.ok(app.includes("requestAnimationFrame(replayLoop)"));
+  assert.ok(styles.includes(".replay-list-card"));
+  assert.ok(styles.includes(".replay-player-card"));
+  assert.ok(styles.includes("#replayCanvas"));
 });

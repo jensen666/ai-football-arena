@@ -1,5 +1,6 @@
 import { buildCommentary } from "./commentary.js";
 import { installMovementMethods } from "./engine/movement.js";
+import { ReplayRecorder } from "./engine/replayRecorder.js";
 import { applyFormation, createMirrorTeams, getOnFieldPlayers } from "./teamFactory.js";
 import { TICKS_PER_SECOND, clamp, createId, distance, formatGameTime, normalizeMatchMinutes, nowIso } from "./utils.js";
 
@@ -47,12 +48,17 @@ export class MatchEngine {
     this.concedingTeam = null;
     this.kickoffTeam = "home";
     this.startedAt = nowIso();
+    this.goalPaceMultiplier = config?.match?.goalPaceMultiplier ?? 1;
+    this.replayRecorder = new ReplayRecorder();
   }
 
   /** 启动比赛。 */
   start() {
     this.state = "kickoff";
+    this.enterKickoff(this.kickoffTeam);
+    this.setupKickoff(this.kickoffTeam);
     this.logEvent("match_started", null, null, "比赛开始，双方镜像阵容就位。", { restart_state: "kickoff" });
+    this.replayRecorder.clear();
     this.recordTick(true);
     return this.snapshot();
   }
@@ -65,10 +71,20 @@ export class MatchEngine {
     if (this.isClockRunning()) this.gameTime += 1 / TICKS_PER_SECOND;
     this.handleTimedStates();
     if (this.state === "in_play") this.simulateOpenPlay();
-    this.updateDynamicTargets();
-    this.updatePlayers();
+    // 开球前 1 秒为准备阶段：球固定在中圈，所有人保持原位，不提前移动。
+    const kickoffPreparation = this.state === "kickoff" && this.stateTicks <= TICKS_PER_SECOND;
+    if (!kickoffPreparation) {
+      this.updateDynamicTargets();
+      this.updatePlayers();
+    }
+    // 准备阶段结束的瞬间由开球手把球传给附近队友，而不是自己带球走。
+    if (this.state === "kickoff" && this.stateTicks === TICKS_PER_SECOND + 1) {
+      this.executeKickoffPass();
+    }
     this.maybeLogCarryProgression();
     this.recordTick(false);
+    this.replayRecorder.recordFrame(() => this.buildReplayFrame());
+    this.replayRecorder.finalizePendingReplays(this.tick, () => this.buildReplayFrame());
     this.handlePeriodBoundaries();
     return this.snapshot();
   }
@@ -91,6 +107,7 @@ export class MatchEngine {
       this.previousState = this.state;
       this.state = "full_time";
       this.logEvent("match_stopped", null, null, reason, {});
+      this.replayRecorder.forceFinalizeAll();
       this.recordTick(true);
     }
   }
@@ -263,7 +280,72 @@ export class MatchEngine {
       recent_events: this.matchLog.match_event_log.slice(-8),
       recent_action_events: this.matchLog.action_event_log.slice(-12),
       stats: this.combinedStats(),
-      report_ready: Boolean(this.reportPaths)
+      report_ready: Boolean(this.reportPaths),
+      replays: this.replayRecorder.getReplayList()
+    };
+  }
+
+  /** 按 replayId 查询已完成的回放片段。 */
+  getReplay(replayId) {
+    return this.replayRecorder.getReplay(replayId);
+  }
+
+  /** 构造用于回放的单帧画面数据。 */
+  buildReplayFrame() {
+    return {
+      tick: this.tick,
+      game_time: this.gameTime,
+      state: this.state,
+      period: this.period,
+      score: { home: this.teams.home.score, away: this.teams.away.score },
+      possession_team: this.possessionTeam,
+      ball: this.buildReplayBall(),
+      teams: {
+        home: { players: getOnFieldPlayers(this.teams.home).map((player) => this.buildReplayPlayer(player)) },
+        away: { players: getOnFieldPlayers(this.teams.away).map((player) => this.buildReplayPlayer(player)) }
+      }
+    };
+  }
+
+  /** 构造回放所需的足球状态副本。 */
+  buildReplayBall() {
+    return {
+      x: this.ball.x,
+      y: this.ball.y,
+      vx: this.ball.vx,
+      vy: this.ball.vy,
+      holderTeam: this.ball.holderTeam,
+      holderId: this.ball.holderId,
+      targetX: this.ball.targetX,
+      targetY: this.ball.targetY,
+      pendingHolderTeam: this.ball.pendingHolderTeam,
+      pendingHolderId: this.ball.pendingHolderId,
+      receptionMode: this.ball.receptionMode,
+      flightHeight: this.ball.flightHeight,
+      flightKind: this.ball.flightKind,
+      flightStartX: this.ball.flightStartX,
+      flightStartY: this.ball.flightStartY,
+      flightEndX: this.ball.flightEndX,
+      flightEndY: this.ball.flightEndY,
+      inFlight: this.ball.inFlight
+    };
+  }
+
+  /** 构造回放所需的球员状态副本。 */
+  buildReplayPlayer(player) {
+    return {
+      id: player.id,
+      shirt: player.shirt,
+      name: player.name,
+      x: player.x,
+      y: player.y,
+      targetX: player.targetX,
+      targetY: player.targetY,
+      position: player.position,
+      stamina: player.stamina,
+      form: player.form,
+      sentOff: player.sentOff,
+      yellowCards: player.yellowCards
     };
   }
 
@@ -388,7 +470,7 @@ export class MatchEngine {
   }
 
   handleTimedStates() {
-    if (this.state === "kickoff" && this.stateTicks >= TICKS_PER_SECOND * 2) this.changeState("in_play");
+    if (this.state === "kickoff" && this.stateTicks >= TICKS_PER_SECOND * 3) this.changeState("in_play");
     if (["throw_in", "goal_kick", "corner_kick", "free_kick", "penalty_kick", "goal_scored"].includes(this.state) && this.stateTicks >= TICKS_PER_SECOND * 3) {
       if (this.state === "goal_scored") this.restartFromKickoff(this.concedingTeam);
       else this.changeState("in_play");
@@ -443,7 +525,11 @@ export class MatchEngine {
   simulateOpenPlay() {
     if (this.passReception) return;
     const immediateShot = this.hasImmediateShootingChance();
-    if ((this.tick % SHOT_INTERVAL_TICKS === 0 || immediateShot) && this.simulateShot()) return;
+    const goalPaceFactor = Math.max(0.01, this.goalPaceMultiplier * this.goalPaceMultiplier);
+    const effectiveShotInterval = Math.max(TICKS_PER_SECOND, Math.floor(SHOT_INTERVAL_TICKS * goalPaceFactor));
+    if (this.tick % effectiveShotInterval === 0 || immediateShot) {
+      if (this.simulateShot() || this.forceTestShot()) return;
+    }
     if (this.tick % PASS_INTERVAL_TICKS === 0) this.simulatePass();
     if (this.state !== "in_play") return;
     if (this.tick % DUEL_INTERVAL_TICKS === 0) this.simulateDuel();
@@ -597,7 +683,8 @@ export class MatchEngine {
     if (!this.isBallWithPlayer(shooter, 4)) return null;
     const goalX = this.possessionTeam === "home" ? 100 : 0;
     const attackingDepth = this.possessionTeam === "home" ? shooter.x : 100 - shooter.x;
-    if (attackingDepth < 70) return null;
+    const minAttackingDepth = this.goalPaceMultiplier >= 1 ? 70 : 0;
+    if (attackingDepth < minAttackingDepth) return null;
     const shotDistance = Math.abs(goalX - shooter.x);
     const centrality = 1 - Math.min(Math.abs(shooter.y - 50) / 45, 1);
     const distanceQuality = 1 - Math.min(shotDistance / 45, 1);
@@ -605,7 +692,8 @@ export class MatchEngine {
     const nearestDefender = this.nearestOnFieldPlayer(opponentId, shooter);
     const pressure = nearestDefender ? clamp((5.5 - distance(nearestDefender, shooter)) / 5.5, 0, 1) : 0;
     const xG = clamp(0.01 + distanceQuality * 0.115 + centrality * 0.026 + ((shooter.attributes.shooting - 50) / 50) * 0.018 - pressure * 0.018 - (shooter.stamina < 45 ? 0.035 : 0), 0.01, 0.2);
-    const threshold = team.tactics.behavior?.shotThreshold ?? 0.07;
+    const baseThreshold = team.tactics.behavior?.shotThreshold ?? 0.07;
+    const threshold = clamp(baseThreshold * this.goalPaceMultiplier, 0.001, 0.5);
     return { team, shooter, xG, threshold, shotDistance, centrality, pressure };
   }
 
@@ -618,7 +706,9 @@ export class MatchEngine {
     const centralBoxChance = chance.shotDistance <= 16.5 && chance.centrality >= 0.75;
     const passWindow = this.tick % PASS_INTERVAL_TICKS === 0;
     const passWindowChance = passWindow && centralBoxChance && chance.shotDistance <= 16 && shotCooldown >= TICKS_PER_SECOND * 360;
-    const cooldownTicks = closeRange ? TICKS_PER_SECOND * 120 : centralBoxChance ? TICKS_PER_SECOND * 240 : TICKS_PER_SECOND * 320;
+    const baseCooldownTicks = closeRange ? TICKS_PER_SECOND * 120 : centralBoxChance ? TICKS_PER_SECOND * 240 : TICKS_PER_SECOND * 320;
+    const goalPaceFactor = Math.max(0.01, this.goalPaceMultiplier * this.goalPaceMultiplier);
+    const cooldownTicks = Math.max(TICKS_PER_SECOND, Math.floor(baseCooldownTicks * goalPaceFactor));
     const cooledDown = shotCooldown >= cooldownTicks;
     const qualityFloor = passWindowChance ? Math.max(0.11, chance.threshold + 0.015) : centralBoxChance ? Math.max(0.115, chance.threshold + 0.035) : closeRange ? Math.max(0.085, chance.threshold) : Math.max(0.13, chance.threshold + 0.03);
     const pressureLimit = centralBoxChance ? 0.98 : 0.9;
@@ -632,17 +722,32 @@ export class MatchEngine {
     this.lastShotTick = this.tick;
     team.stats.shots += 1;
     team.stats.xG += xG;
-    const scored = this.rng.next() < xG;
+    const effectiveXG = Math.min(0.99, xG / Math.max(0.05, this.goalPaceMultiplier));
+    const scored = this.rng.next() < effectiveXG;
     const onTargetRoll = this.rng.next();
-    const onTarget = scored || onTargetRoll < clamp(xG + 0.25, 0.08, 0.75);
+    const onTarget = scored || onTargetRoll < clamp(effectiveXG + 0.25, 0.08, 0.75);
     if (onTarget) team.stats.shotsOnTarget += 1;
     if (scored) {
       team.score += 1;
       shooter.form = clamp(shooter.form + 2, -10, 10);
       const trajectory = this.shotTrajectory(shooter, onTarget, true);
+      // 让足球在进球后真正飞向球门网，而不是停留在射门者脚下等待重置。
+      delete this.ball.holderTeam;
+      delete this.ball.holderId;
+      this.setBallTarget(trajectory.end.x, trajectory.end.y);
+      this.ball.flightHeight = trajectory.height;
+      this.ball.flightKind = trajectory.kind;
+      this.ball.flightStartX = trajectory.start.x;
+      this.ball.flightStartY = trajectory.start.y;
+      this.ball.flightEndX = trajectory.end.x;
+      this.ball.flightEndY = trajectory.end.y;
+      this.ball.inFlight = true;
+      this.ball.vx = 0;
+      this.ball.vy = 0;
       this.concedingTeam = this.possessionTeam === "home" ? "away" : "home";
       this.logEvent("goal", this.possessionTeam, shooter.id, `${shooter.name} 破门得分。`, { xG, restart_state: "kickoff" });
       this.logActionEvent("goal", this.possessionTeam, shooter.id, `${shooter.name} 破门得分。`, { xG, trajectory });
+      this.replayRecorder.startReplay(this.tick, this.possessionTeam, shooter.id, shooter.name, { home: this.teams.home.score, away: this.teams.away.score }, this.gameTime);
       if (this.rng.next() < 0.2) this.triggerVarCheck("进球有效性复核。", { reviewType: "goal_validity" });
       else this.changeState("goal_scored");
     } else {
@@ -652,6 +757,29 @@ export class MatchEngine {
       this.simulateBallOut(onTarget && this.rng.next() < 0.25 ? "corner_kick" : "goal_kick");
     }
     return true;
+  }
+
+  /**
+   * 测试模式下强制创造一次射门机会。
+   * 当 goalPaceMultiplier < 1 且常规 simulateShot 未触发时调用，
+   * 通过把球直接放到前场射手脚下来加速进球，便于回放功能测试。
+   */
+  forceTestShot() {
+    if (this.goalPaceMultiplier >= 1) return false;
+    const team = this.teams[this.possessionTeam];
+    const shooter = team.players.find((player) => player.onField && player.position === "ST") || getOnFieldPlayers(team)[0];
+    if (!shooter) return false;
+    const goalX = this.possessionTeam === "home" ? 93 : 7;
+    this.ball.x = goalX;
+    this.ball.y = 50;
+    this.ball.holderTeam = this.possessionTeam;
+    this.ball.holderId = shooter.id;
+    this.ball.vx = 0;
+    this.ball.vy = 0;
+    delete this.ball.targetX;
+    delete this.ball.targetY;
+    delete this.ball.inFlight;
+    return this.simulateShot();
   }
 
   /** 返回传球的可视化球路，不影响比赛判定。 */
@@ -707,13 +835,16 @@ export class MatchEngine {
   /** 返回射门的可视化球路，不影响比赛判定。 */
   shotTrajectory(shooter, onTarget, scored) {
     const goalX = this.possessionTeam === "home" ? 100 : 0;
+    // 进球时让球飞入球门网深处，而不是停在球门线上。
+    const netDepth = scored ? 4.5 : 0;
+    const targetX = this.possessionTeam === "home" ? goalX + netDepth : goalX - netDepth;
     const targetY = scored ? 50 : clamp(shooter.y + (shooter.y < 50 ? -8 : 8), 29, 71);
     return {
       kind: scored ? "goal_shot" : "shot",
       label: onTarget ? "射正" : "射偏",
       height: onTarget ? 0.5 : 0.72,
       start: this.pointRef(shooter),
-      end: { x: goalX, y: targetY },
+      end: { x: targetX, y: targetY },
       outcome: scored ? "goal" : onTarget ? "saved_or_blocked" : "missed"
     };
   }
@@ -876,6 +1007,13 @@ export class MatchEngine {
   setupKickoff(kickoffTeam) {
     this.possessionTeam = kickoffTeam;
     const kicker = this.selectKickoffPlayer(kickoffTeam);
+    if (kicker) {
+      // 让开球手站到中圈球旁，准备开球，而不是在远处看球自己动。
+      kicker.x = 50;
+      kicker.y = 50;
+      kicker.targetX = 50;
+      kicker.targetY = 50;
+    }
     this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: kickoffTeam, holderId: kicker?.id ?? null };
   }
 
@@ -884,6 +1022,55 @@ export class MatchEngine {
     const players = getOnFieldPlayers(this.teams[kickoffTeam]);
     if (!players.length) return null;
     return players.find((player) => player.position === "ST") ?? players[0] ?? null;
+  }
+
+  /** 执行开球传球：准备阶段结束后由开球手把球传给附近队友，然后进入比赛。 */
+  executeKickoffPass() {
+    const team = this.teams[this.possessionTeam];
+    const passer = team.players.find((player) => player.id === this.ball.holderId);
+    if (!passer) return;
+    const receivers = getOnFieldPlayers(team).filter((player) => player.id !== passer.id);
+    if (!receivers.length) return;
+    const direction = this.possessionTeam === "home" ? 1 : -1;
+    // 开球应回传：优先选择位于中圈后方的中后场队友。
+    const backReceivers = receivers.filter((player) => (player.x - passer.x) * direction < -2);
+    const pool = backReceivers.length ? backReceivers : receivers;
+    const roleBonus = { CB: 10, DM: 8, CM: 6, LB: 4, RB: 4, GK: -20, ST: -10, AM: 0, RW: 0, LW: 0 };
+    const candidates = pool
+      .map((receiver) => ({ receiver, score: -distance(passer, receiver) * 0.8 + (roleBonus[receiver.position] ?? 0) }))
+      .sort((left, right) => right.score - left.score);
+    const receiver = candidates[0]?.receiver;
+    if (!receiver) return;
+    const trajectory = this.passTrajectory(passer, receiver);
+    // 先切状态再设置传球目标，避免 changeState 里的 clearBallTarget 把刚设的 target 清掉。
+    this.logActionEvent("pass_completed", this.possessionTeam, passer.id, "", { target: this.playerRef(this.possessionTeam, receiver.id), trajectory });
+    this.changeState("in_play");
+    this.passReception = {
+      teamId: this.possessionTeam,
+      passerId: passer.id,
+      receiverId: receiver.id,
+      mode: trajectory.reception_mode,
+      targetX: trajectory.end.x,
+      targetY: trajectory.end.y,
+      passStartX: trajectory.start.x,
+      passStartY: trajectory.start.y,
+      receiverStartX: receiver.x,
+      receiverStartY: receiver.y,
+      startedTick: this.tick
+    };
+    this.setBallTarget(trajectory.end.x, trajectory.end.y);
+    this.ball.pendingHolderTeam = this.possessionTeam;
+    this.ball.pendingHolderId = receiver.id;
+    this.ball.receptionMode = trajectory.reception_mode;
+    this.ball.flightHeight = trajectory.height;
+    this.ball.flightKind = trajectory.kind;
+    this.ball.flightStartX = trajectory.start.x;
+    this.ball.flightStartY = trajectory.start.y;
+    this.ball.flightEndX = trajectory.end.x;
+    this.ball.flightEndY = trajectory.end.y;
+    this.ball.inFlight = true;
+    delete this.ball.holderTeam;
+    delete this.ball.holderId;
   }
 
   /** 开球归位：双方场上球员回到阵型基础目标位置。 */
