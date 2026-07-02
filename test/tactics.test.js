@@ -76,7 +76,6 @@ test("单队同一时间最多 1 个在途请求，超时后沿用上一有效�
 test("超时后的迟到模型响应不会应用战术", async () => {
   const { config, engine } = setup();
   class SlowOrchestrator extends CoachOrchestrator {
-    getLocalLatency() { return 0; }
     async callCoach(side) {
       await new Promise((resolve) => setTimeout(resolve, 30));
       return createDefaultDecision(side, this.engine.tick, this.engine.teams[side].formation, 1);
@@ -95,7 +94,6 @@ test("超时后的迟到模型响应不会应用战术", async () => {
 test("暂停期间模型响应只暂存，恢复后再应用战术", async () => {
   const { config, engine } = setup();
   class PausedOrchestrator extends CoachOrchestrator {
-    getLocalLatency() { return 0; }
     async callCoach(side) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return createDefaultDecision(side, this.engine.tick, this.engine.teams[side].formation, 1);

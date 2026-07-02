@@ -83,7 +83,7 @@ export function interpretDecision(decision, previous = defaultTactics(decision?.
     intent: decision.intent,
     riskLevel: clamp(decision.risk_level, 0, 1),
     tempo: orders.tempo || previous.tempo,
-    pressingHeight: orders.pressing_height || previous.pressingingHeight || previous.pressingHeight,
+    pressingHeight: orders.pressing_height || previous.pressingHeight,
     pressingIntensity: orders.pressing_intensity || previous.pressingIntensity,
     defensiveLine: orders.defensive_line || previous.defensiveLine,
     attackingWidth: orders.attacking_width || previous.attackingWidth,

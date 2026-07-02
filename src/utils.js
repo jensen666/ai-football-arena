@@ -66,7 +66,7 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
-/** 生成本地 match id。 */
+/** 生成本地唯一 ID。 */
 export function createId(prefix = "id") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }

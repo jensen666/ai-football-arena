@@ -14,7 +14,7 @@ const FORMATION_SLOTS = {
 
 const FORMATION_ROLE_ORDERS = {
   "4-4-1": ["GK", "RB", "CB", "CB", "LB", "RW", "CM", "AM", "LW", "ST"],
-  "4-4-2": ["GK", "RB", "CB", "CB", "LB", "RW", "CM", "AM", "LW", "ST", "LW"],
+  "4-4-2": ["GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST"],
   "4-3-3": ["GK", "RB", "CB", "CB", "LB", "DM", "CM", "AM", "RW", "ST", "LW"],
   "4-2-3-1": ["GK", "RB", "CB", "CB", "LB", "DM", "CM", "RW", "AM", "LW", "ST"],
   "3-5-2": ["GK", "CB", "CB", "CB", "RB", "DM", "CM", "AM", "LB", "ST", "LW"],

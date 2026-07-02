@@ -5,6 +5,8 @@ let visualEffects = [];
 const seenVisualEffectIds = new Set();
 let lastPlayerAngles = new Map();
 const replayPlayerAngles = new Map();
+let lastPlayerMoving = new Map();
+const replayPlayerMoving = new Map();
 const goalNetTimes = new Map();
 
 const VISUAL_EFFECT_MS = 1600;
@@ -56,9 +58,13 @@ function drawPitchTo(targetCanvas, targetCtx, state, time, options = {}) {
   const savedCanvas = canvas;
   const savedCtx = ctx;
   const savedAngles = lastPlayerAngles;
+  const savedMoving = lastPlayerMoving;
   canvas = targetCanvas;
   ctx = targetCtx;
-  if (options.skipEffects) lastPlayerAngles = replayPlayerAngles;
+  if (options.skipEffects) {
+    lastPlayerAngles = replayPlayerAngles;
+    lastPlayerMoving = replayPlayerMoving;
+  }
   try {
     const width = canvas.width;
     const height = canvas.height;
@@ -80,6 +86,7 @@ function drawPitchTo(targetCanvas, targetCtx, state, time, options = {}) {
     canvas = savedCanvas;
     ctx = savedCtx;
     lastPlayerAngles = savedAngles;
+    lastPlayerMoving = savedMoving;
   }
 }
 
@@ -278,6 +285,8 @@ function playerPose(player, side, width, height, state, time = performance.now()
 /** 普通跑动姿态。
  * 当球员在原地微幅摆动时，保持上一次朝向，避免因 weave 导致的目标点
  * 在左右反复变号而左右转头。真正大范围移动时才平滑转向目标方向。
+ * moving 判断使用滞后死区：进入跑动需要较大位移，退出跑动才变 idle，
+ * 避免目标点小幅呼吸波动时跑/停动画来回切换造成“抖腿”。
  */
 function movementPose(player, side, width, height, time = performance.now()) {
   const point = toCanvas(player, width, height);
@@ -285,11 +294,15 @@ function movementPose(player, side, width, height, time = performance.now()) {
   const dx = target.x - point.x;
   const dy = target.y - point.y;
   const gap = Math.hypot(dx, dy);
-  const moving = gap > 1.2;
+  const angleKey = `${side}-${player.id}`;
+  const wasMoving = lastPlayerMoving.get(angleKey) ?? false;
+  // 进一步加大死区：停下来时 weave 在屏幕上的合位移可能仍有 3~4 像素，
+  // 用 10/4 的滞后阈值避免 run/idle 在呼吸波动下反复切换。
+  const moving = gap > 10 || (wasMoving && gap > 4);
+  lastPlayerMoving.set(angleKey, moving);
   const step = moving ? Math.sin(time / 120 + player.id * 0.7) : 0;
   const spec = moving ? PLAYER_ACTION_SYSTEM.run : PLAYER_ACTION_SYSTEM.idle;
   const targetAngle = moving ? Math.atan2(dy, dx) : -Math.PI / 2;
-  const angleKey = `${side}-${player.id}`;
   const lastAngle = lastPlayerAngles.get(angleKey) ?? targetAngle;
   // 小位移时不更新朝向，避免 weave 引发的反复左右横跳；
   // 大位移时做角度插值，避免瞬间跳变。

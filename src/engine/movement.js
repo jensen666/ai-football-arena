@@ -40,8 +40,13 @@ function updatePlayers() {
       const dy = player.targetY - player.y;
       const gap = Math.hypot(dx, dy);
       const maxStep = player.position === "GK" ? 0.16 : 0.22 + player.attributes.speed / 700;
-      const step = Math.min(gap, maxStep, Math.max(0.035, gap * 0.18));
-      if (gap > 0.001) {
+      // 贴近目标时直接吸附，避免最小步长 0.035 造成在目标点两侧反复超调，
+      // 从而消除停下来后的规律性原地蹭步。
+      if (gap <= 0.12) {
+        player.x = player.targetX;
+        player.y = player.targetY;
+      } else if (gap > 0.001) {
+        const step = Math.min(gap, maxStep, Math.max(0.035, gap * 0.18));
         player.x += (dx / gap) * step;
         player.y += (dy / gap) * step;
       }
@@ -135,25 +140,6 @@ function updateDynamicTargets() {
         continue;
       }
       if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
-        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
-        const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
-        const startX = this.carryTracker?.startX ?? holder.x;
-        const driftX = direction * Math.min(carryTicks * 0.05, 6);
-        player.targetX = clamp(startX + driftX + Math.cos(phase) * 1.5, 4, 96);
-        player.targetY = clamp(holder.y + Math.sin(phase * 1.35) * 1.5, 4, 96);
-        continue;
-      }
-      if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
-        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
-        const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
-        const startX = this.carryTracker?.startX ?? holder.x;
-        const driftX = direction * Math.min(carryTicks * 0.05, 6);
-        player.targetX = clamp(startX + driftX + Math.cos(phase) * 1.5, 4, 96);
-        player.targetY = clamp(holder.y + Math.sin(phase * 1.35) * 1.5, 4, 96);
-        continue;
-      }
-      if (!this.passReception && hasBall && player.id === this.ball.holderId && !Number.isFinite(this.ball.targetX)) {
-        // 球粘脚下时持球人向进攻方向带球推进，避免接球后原地冻结
         const carryTicks = this.tick - (this.carryTracker?.startTick ?? this.tick);
         const startX = this.carryTracker?.startX ?? holder.x;
         const driftX = direction * Math.min(carryTicks * 0.05, 6);

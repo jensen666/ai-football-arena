@@ -32,7 +32,7 @@ export class MatchEngine {
     this.stateTicks = 0;
     this.paused = false;
     this.possessionTeam = "home";
-    this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: "home", holderId: 9 };
+    this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: "home", holderId: 9, targetX: null, targetY: null, pendingHolderTeam: null, pendingHolderId: null, receptionMode: null, flightHeight: null, flightKind: null, flightStartX: null, flightStartY: null, flightEndX: null, flightEndY: null, inFlight: null };
     this.lastPassSnapshot = null;
     this.lastShotTick = -Infinity;
     this.lastEventTicks = new Set();
@@ -49,6 +49,7 @@ export class MatchEngine {
     this.kickoffTeam = "home";
     this.startedAt = nowIso();
     this.goalPaceMultiplier = config?.match?.goalPaceMultiplier ?? 1;
+    this.testMode = config?.match?.testMode ?? false;
     this.replayRecorder = new ReplayRecorder();
   }
 
@@ -203,15 +204,16 @@ export class MatchEngine {
       team.stats.yellowCards += 1;
       this.logEvent("yellow_card", teamId, playerId, `${player.name} 得到黄牌。`, {});
       this.logActionEvent("yellow_card", teamId, playerId, `${player.name} 得到黄牌。`);
-      if (player.yellowCards >= 2) this.cardPlayer(teamId, playerId, "red");
-      return;
+      if (player.yellowCards < 2) return;
     }
     player.sentOff = true;
     player.onField = false;
     team.stats.redCards += 1;
     this.rebalanceAfterRed(teamId);
-    this.logEvent("red_card", teamId, playerId, `${player.name} 被红牌罚下，阵型自动重平衡。`, {});
-    this.logActionEvent("red_card", teamId, playerId, `${player.name} 被红牌罚下。`);
+    const reason = card === "yellow" ? `${player.name} 两黄变红被罚下，阵型自动重平衡。` : `${player.name} 被红牌罚下，阵型自动重平衡。`;
+    const actionDesc = card === "yellow" ? `${player.name} 两黄变红被罚下。` : `${player.name} 被红牌罚下。`;
+    this.logEvent("red_card", teamId, playerId, reason, {});
+    this.logActionEvent("red_card", teamId, playerId, actionDesc);
   }
 
   /** 触发 VAR 复核，按复核类型区分进球有效性与关键判罚。 */
@@ -236,13 +238,25 @@ export class MatchEngine {
   simulatePenaltyShootout() {
     this.changeState("penalty_shootout");
     const shootout = { home: 0, away: 0, kicks: [] };
+    const teamKickers = {};
+    for (const side of ["home", "away"]) {
+      const outfield = getOnFieldPlayers(this.teams[side]).filter((player) => player.position !== "GK");
+      teamKickers[side] = outfield.length > 0 ? outfield : getOnFieldPlayers(this.teams[side]);
+    }
     let round = 0;
     while (round < 5 || shootout.home === shootout.away) {
       round += 1;
       for (const side of ["home", "away"]) {
-        const scorer = this.rng.next() < 0.72;
-        if (scorer) shootout[side] += 1;
-        shootout.kicks.push({ round, side, scored: scorer });
+        const opponentSide = side === "home" ? "away" : "home";
+        const kickers = teamKickers[side];
+        const kicker = kickers[(round - 1) % kickers.length];
+        const opponentGK = getOnFieldPlayers(this.teams[opponentSide]).find((player) => player.position === "GK");
+        const shootingSkill = kicker?.attributes?.shooting ?? 70;
+        const gkSkill = opponentGK?.attributes?.goalkeeper ?? 50;
+        const probability = clamp(0.72 + (shootingSkill - 50) / 250 - (gkSkill - 50) / 300, 0.45, 0.92);
+        const scored = this.rng.next() < probability;
+        if (scored) shootout[side] += 1;
+        shootout.kicks.push({ round, side, scored, kickerId: kicker?.id ?? null, gkId: opponentGK?.id ?? null });
       }
       const remaining = 5 - round;
       if (round >= 5 || Math.abs(shootout.home - shootout.away) > remaining) {
@@ -732,8 +746,8 @@ export class MatchEngine {
       shooter.form = clamp(shooter.form + 2, -10, 10);
       const trajectory = this.shotTrajectory(shooter, onTarget, true);
       // 让足球在进球后真正飞向球门网，而不是停留在射门者脚下等待重置。
-      delete this.ball.holderTeam;
-      delete this.ball.holderId;
+      this.ball.holderTeam = null;
+      this.ball.holderId = null;
       this.setBallTarget(trajectory.end.x, trajectory.end.y);
       this.ball.flightHeight = trajectory.height;
       this.ball.flightKind = trajectory.kind;
@@ -761,11 +775,11 @@ export class MatchEngine {
 
   /**
    * 测试模式下强制创造一次射门机会。
-   * 当 goalPaceMultiplier < 1 且常规 simulateShot 未触发时调用，
+   * 仅在 testMode 显式开启且常规 simulateShot 未触发时调用，
    * 通过把球直接放到前场射手脚下来加速进球，便于回放功能测试。
    */
   forceTestShot() {
-    if (this.goalPaceMultiplier >= 1) return false;
+    if (!this.testMode) return false;
     const team = this.teams[this.possessionTeam];
     const shooter = team.players.find((player) => player.onField && player.position === "ST") || getOnFieldPlayers(team)[0];
     if (!shooter) return false;
@@ -776,9 +790,9 @@ export class MatchEngine {
     this.ball.holderId = shooter.id;
     this.ball.vx = 0;
     this.ball.vy = 0;
-    delete this.ball.targetX;
-    delete this.ball.targetY;
-    delete this.ball.inFlight;
+    this.ball.targetX = null;
+    this.ball.targetY = null;
+    this.ball.inFlight = null;
     return this.simulateShot();
   }
 
@@ -879,18 +893,18 @@ export class MatchEngine {
 
   /** 清除足球目标点，恢复跟随持球人。 */
   clearBallTarget() {
-    delete this.ball.targetX;
-    delete this.ball.targetY;
-    delete this.ball.pendingHolderTeam;
-    delete this.ball.pendingHolderId;
-    delete this.ball.receptionMode;
-    delete this.ball.flightHeight;
-    delete this.ball.flightKind;
-    delete this.ball.flightStartX;
-    delete this.ball.flightStartY;
-    delete this.ball.flightEndX;
-    delete this.ball.flightEndY;
-    delete this.ball.inFlight;
+    this.ball.targetX = null;
+    this.ball.targetY = null;
+    this.ball.pendingHolderTeam = null;
+    this.ball.pendingHolderId = null;
+    this.ball.receptionMode = null;
+    this.ball.flightHeight = null;
+    this.ball.flightKind = null;
+    this.ball.flightStartX = null;
+    this.ball.flightStartY = null;
+    this.ball.flightEndX = null;
+    this.ball.flightEndY = null;
+    this.ball.inFlight = null;
     this.passReception = null;
   }
 
@@ -1014,7 +1028,7 @@ export class MatchEngine {
       kicker.targetX = 50;
       kicker.targetY = 50;
     }
-    this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: kickoffTeam, holderId: kicker?.id ?? null };
+    this.ball = { x: 50, y: 50, vx: 0, vy: 0, holderTeam: kickoffTeam, holderId: kicker?.id ?? null, targetX: null, targetY: null, pendingHolderTeam: null, pendingHolderId: null, receptionMode: null, flightHeight: null, flightKind: null, flightStartX: null, flightStartY: null, flightEndX: null, flightEndY: null, inFlight: null };
   }
 
   /** 选择开球方场上开球手，优先前锋，找不到返回 null。 */
@@ -1069,8 +1083,8 @@ export class MatchEngine {
     this.ball.flightEndX = trajectory.end.x;
     this.ball.flightEndY = trajectory.end.y;
     this.ball.inFlight = true;
-    delete this.ball.holderTeam;
-    delete this.ball.holderId;
+    this.ball.holderTeam = null;
+    this.ball.holderId = null;
   }
 
   /** 开球归位：双方场上球员回到阵型基础目标位置。 */

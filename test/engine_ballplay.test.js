@@ -115,8 +115,8 @@ test("传球在球和人都到落点后才真正换持球人", () => {
   assert.equal(engine.passReception, null);
   assert.equal(engine.ball.holderTeam, "home");
   assert.equal(engine.ball.holderId, receiver.id);
-  assert.equal(engine.ball.inFlight, undefined);
-  assert.equal(engine.ball.flightHeight, undefined);
+  assert.equal(engine.ball.inFlight, null);
+  assert.equal(engine.ball.flightHeight, null);
   assert.ok(Math.hypot(engine.ball.x - receiver.x, engine.ball.y - receiver.y) < 0.01);
 });
 

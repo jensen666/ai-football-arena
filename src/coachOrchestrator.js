@@ -75,11 +75,10 @@ export class CoachOrchestrator {
     const input = this.createCoachInput(side, trigger);
     sideState.requestEventIds = input.included_event_ids || [];
     sideState.lastInputSummary = input.summary;
-    const latency = this.getLocalLatency(side);
     sideState.timeoutTimer = setTimeout(() => {
       if (this.isActiveRequest(side, requestId)) this.timeoutRequest(side);
     }, REQUEST_TIMEOUT_MS);
-    setTimeout(() => this.resolveRequest(side, input, requestId), latency);
+    this.resolveRequest(side, input, requestId);
     this.onUpdate("coach", this.dashboard());
     return true;
   }
@@ -335,10 +334,6 @@ export class CoachOrchestrator {
       pending_events: this.engine.pendingEvents[side].map((event) => event.event_type),
       fallback_status: state.status === "pending" ? "暂停待应用" : state.status === "timeout" || state.status === "error" ? "沿用上一有效战术" : "正常"
     };
-  }
-
-  getLocalLatency(side) {
-    return side === "home" ? 180 : 240;
   }
 }
 

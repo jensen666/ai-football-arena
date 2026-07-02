@@ -492,16 +492,26 @@ function drawLoop(time) {
   requestAnimationFrame(drawLoop);
 }
 
-/** 平滑服务器快照之间的球员和足球坐标。 */
+/** 平滑服务器快照之间的球员和足球坐标。
+ * 对球员加入小位移死区，抑制 weave 等引擎微幅抖动在画面上的左右/前后晃动；
+ * 足球保持原有平滑，确保传球、射门轨迹连续。
+ */
 function smoothDrawState(state) {
   const source = state || mockState();
   const alpha = reducedMotionQuery?.matches ? 1 : 0.3;
+  const positionDeadzone = 0.18; // 球场百分比坐标，约 1.5~2 px
   if (!renderState || renderState.match_id !== source.match_id) renderState = cloneDrawState(source);
   for (const side of ["home", "away"]) {
     const previous = new Map(renderState.teams[side].players.map((player) => [player.id, player]));
     renderState.teams[side] = { ...source.teams[side], players: source.teams[side].players.map((player) => {
       const last = previous.get(player.id) || player;
-      return { ...player, x: last.x + (player.x - last.x) * alpha, y: last.y + (player.y - last.y) * alpha };
+      let dx = player.x - last.x;
+      let dy = player.y - last.y;
+      const delta = Math.hypot(dx, dy);
+      // 软死区：delta 较小时按比例压低位移，避免静止球员反复微移；
+      // delta 较大时正常平滑，不影响真实跑动。
+      const scale = delta <= positionDeadzone ? 0 : Math.min(1, (delta - positionDeadzone) / delta);
+      return { ...player, x: last.x + dx * alpha * scale, y: last.y + dy * alpha * scale };
     }) };
   }
   if (source.ball) {
