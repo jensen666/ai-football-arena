@@ -42,7 +42,8 @@ function collectUi() {
   return {
     homeName: document.getElementById("homeName"), awayName: document.getElementById("awayName"), homeScore: document.getElementById("homeScore"), awayScore: document.getElementById("awayScore"), matchTime: document.getElementById("matchTime"), matchState: document.getElementById("matchState"), matchSummary: document.getElementById("matchSummary"),
     startBtn: document.getElementById("startBtn"), pauseBtn: document.getElementById("pauseBtn"), resumeBtn: document.getElementById("resumeBtn"), restartBtn: document.getElementById("restartBtn"), stopBtn: document.getElementById("stopBtn"), reportBtn: document.getElementById("reportBtn"),
-    settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), homeKeyStatus: document.getElementById("homeKeyStatus"), awayKeyStatus: document.getElementById("awayKeyStatus"), testHomeBtn: document.getElementById("testHomeBtn"), testAwayBtn: document.getElementById("testAwayBtn"),
+    settingsOpen: document.getElementById("settingsOpen"), settingsClose: document.getElementById("settingsClose"), settingsModal: document.getElementById("settingsModal"), settingsForm: document.getElementById("settingsForm"), settingsMessage: document.getElementById("settingsMessage"), homeKeyStatus: document.getElementById("homeKeyStatus"), awayKeyStatus: document.getElementById("awayKeyStatus"), testAllBtn: document.getElementById("testAllBtn"),
+    homeModelsBtn: document.getElementById("homeModelsBtn"), awayModelsBtn: document.getElementById("awayModelsBtn"), homeModelList: document.getElementById("homeModelList"), awayModelList: document.getElementById("awayModelList"), homeModelsStatus: document.getElementById("homeModelsStatus"), awayModelsStatus: document.getElementById("awayModelsStatus"),
     coachDashboard: document.getElementById("coachDashboard"), tacticPanel: document.getElementById("tacticPanel"), modelStats: document.getElementById("modelStats"), commentaryFeed: document.getElementById("commentaryFeed"), eventTimeline: document.getElementById("eventTimeline"), matchStats: document.getElementById("matchStats"), reportStatus: document.getElementById("reportStatus"),
     reportModal: document.getElementById("reportModal"), reportClose: document.getElementById("reportClose"), reportContent: document.getElementById("reportContent"),
     preMatchOverlay: document.getElementById("preMatchOverlay"), preMatchTitle: document.getElementById("preMatchTitle"), preMatchHome: document.getElementById("preMatchHome"), preMatchAway: document.getElementById("preMatchAway"),
@@ -68,8 +69,11 @@ function bindEvents() {
   });
   ui.reportModal.addEventListener("click", (event) => { if (event.target === ui.reportModal) closeModal(ui.reportModal); });
   ui.settingsForm.addEventListener("submit", saveSettings);
-  ui.testHomeBtn.addEventListener("click", () => testModel("home"));
-  ui.testAwayBtn.addEventListener("click", () => testModel("away"));
+  ui.testAllBtn.addEventListener("click", () => testAllModels());
+  ui.homeModelsBtn.addEventListener("click", () => fetchModelList("home"));
+  ui.awayModelsBtn.addEventListener("click", () => fetchModelList("away"));
+  bindModelListInput("home");
+  bindModelListInput("away");
   ui.startBtn.addEventListener("click", startMatch);
   ui.pauseBtn.addEventListener("click", () => postControl("pause"));
   ui.resumeBtn.addEventListener("click", () => postControl("resume"));
@@ -146,12 +150,65 @@ async function saveSettings(event) {
   ui.settingsMessage.textContent = "设置已保存。";
 }
 
-/** 测试模型连接。 */
-async function testModel(side) {
+/** 一键并行测试双方模型连接，单侧失败不影响另一侧结果。 */
+async function testAllModels() {
   const nextConfig = formConfig();
-  const coach = side === "home" ? nextConfig.homeCoach : nextConfig.awayCoach;
-  const data = await fetchJson("/api/model/test", { method: "POST", body: JSON.stringify({ side, coach }) });
-  ui.settingsMessage.textContent = `${side === "home" ? "主队" : "客队"}连接测试：${data.result.message}`;
+  ui.testAllBtn.disabled = true;
+  ui.settingsMessage.textContent = "主队、客队连接测试进行中...";
+  const results = await Promise.all(["home", "away"].map(async (side) => {
+    const label = side === "home" ? "主队" : "客队";
+    const coach = side === "home" ? nextConfig.homeCoach : nextConfig.awayCoach;
+    try {
+      const data = await fetchJson("/api/model/test", { method: "POST", body: JSON.stringify({ side, coach }) });
+      return `${label}：${data.result.message}`;
+    } catch (error) {
+      return `${label}：连接测试失败：${error.message}`;
+    }
+  }));
+  ui.settingsMessage.textContent = results.join(" ");
+  ui.testAllBtn.disabled = false;
+}
+
+/** 获取模型列表并挂到 Model 输入框的 datalist 上，点击输入框即可下拉选择，进度和结果就地显示在按钮下方。 */
+async function fetchModelList(side) {
+  const label = side === "home" ? "主队" : "客队";
+  const button = side === "home" ? ui.homeModelsBtn : ui.awayModelsBtn;
+  const list = side === "home" ? ui.homeModelList : ui.awayModelList;
+  const status = side === "home" ? ui.homeModelsStatus : ui.awayModelsStatus;
+  const coach = side === "home" ? formConfig().homeCoach : formConfig().awayCoach;
+  const setStatus = (text) => { status.textContent = text; ui.settingsMessage.textContent = text; };
+  button.disabled = true;
+  setStatus(`${label}模型列表获取中...`);
+  try {
+    const data = await fetchJson("/api/model/list", { method: "POST", body: JSON.stringify({ side, coach }) });
+    const models = data.result?.models || [];
+    if (!models.length) {
+      setStatus(`${label}：${data.result?.message || "未获取到可用模型。"}`);
+      return;
+    }
+    list.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join("");
+    setStatus(`${label}${data.result.message}点击 Model 输入框即可下拉选择。`);
+    ui.settingsForm[side === "home" ? "homeModel" : "awayModel"].focus();
+  } catch (error) {
+    setStatus(`${label}模型列表获取失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** Model 输入框聚焦时若有已获取的候选列表，先清空以展开完整下拉（datalist 会按当前值过滤）；未做选择失焦则恢复原值。 */
+function bindModelListInput(prefix) {
+  const input = ui.settingsForm[`${prefix}Model`];
+  const list = prefix === "home" ? ui.homeModelList : ui.awayModelList;
+  input.addEventListener("focus", () => {
+    if (!list.options.length) return;
+    input.dataset.savedValue = input.value;
+    input.value = "";
+  });
+  input.addEventListener("blur", () => {
+    if (!input.value && input.dataset.savedValue) input.value = input.dataset.savedValue;
+    delete input.dataset.savedValue;
+  });
 }
 
 /** 开始比赛。 */
@@ -524,14 +581,28 @@ function smoothDrawState(state) {
 /** 构造设置表单配置。 */
 function formConfig() {
   const form = new FormData(ui.settingsForm);
-  const homeCoach = { provider: formText(form, "homeProvider"), model: formText(form, "homeModel"), endpoint: formText(form, "homeEndpoint"), api_key_ref: formText(form, "homeKeyRef"), api_key: formText(form, "homeApiKey"), free_strategy_prompt: formText(form, "homePrompt") };
-  const awayCoach = { provider: formText(form, "awayProvider"), model: formText(form, "awayModel"), endpoint: formText(form, "awayEndpoint"), api_key_ref: formText(form, "awayKeyRef"), api_key: formText(form, "awayApiKey"), free_strategy_prompt: formText(form, "awayPrompt") };
+  const homeCoach = coachFormConfig(form, "home", config?.homeCoach);
+  const awayCoach = coachFormConfig(form, "away", config?.awayCoach);
   homeCoach.name = coachDisplayName(homeCoach, "主队");
   awayCoach.name = coachDisplayName(awayCoach, "客队");
   return {
     homeCoach,
     awayCoach,
     match: { homeFormation: formText(form, "homeFormation"), awayFormation: formText(form, "awayFormation"), matchMinutes: Number(form.get("matchMinutes")), goalPaceMultiplier: parseFloat(String(form.get("goalPaceMultiplier") || "1").replace(",", ".")) || 1, seed: formText(form, "seed"), knockout: form.get("knockout") === "on" }
+  };
+}
+
+/** 单侧教练表单配置：API Key 输入框同时接受原始密钥和 env: 引用，留空时保留已保存引用。 */
+function coachFormConfig(form, prefix, saved = {}) {
+  const keyInput = formText(form, `${prefix}ApiKey`);
+  const isRef = keyInput.startsWith("env:");
+  return {
+    provider: formText(form, `${prefix}Provider`),
+    model: formText(form, `${prefix}Model`),
+    endpoint: formText(form, `${prefix}Endpoint`),
+    api_key_ref: isRef ? keyInput : keyInput ? "" : saved.api_key_ref || "",
+    api_key: isRef ? "" : keyInput,
+    free_strategy_prompt: formText(form, `${prefix}Prompt`)
   };
 }
 
@@ -544,16 +615,14 @@ function fillForm(nextConfig) {
   ui.settingsForm.homeProvider.value = nextConfig.homeCoach.provider;
   ui.settingsForm.homeModel.value = nextConfig.homeCoach.model;
   ui.settingsForm.homeEndpoint.value = nextConfig.homeCoach.endpoint || "";
-  ui.settingsForm.homeKeyRef.value = nextConfig.homeCoach.api_key_ref || "";
   ui.settingsForm.homeApiKey.value = "";
-  ui.homeKeyStatus.textContent = nextConfig.homeCoach.api_key_set ? "已保存密钥，留空保留" : "未设置密钥";
+  ui.homeKeyStatus.textContent = keyStatusText(nextConfig.homeCoach);
   ui.settingsForm.homePrompt.value = nextConfig.homeCoach.free_strategy_prompt || "";
   ui.settingsForm.awayProvider.value = nextConfig.awayCoach.provider;
   ui.settingsForm.awayModel.value = nextConfig.awayCoach.model;
   ui.settingsForm.awayEndpoint.value = nextConfig.awayCoach.endpoint || "";
-  ui.settingsForm.awayKeyRef.value = nextConfig.awayCoach.api_key_ref || "";
   ui.settingsForm.awayApiKey.value = "";
-  ui.awayKeyStatus.textContent = nextConfig.awayCoach.api_key_set ? "已保存密钥，留空保留" : "未设置密钥";
+  ui.awayKeyStatus.textContent = keyStatusText(nextConfig.awayCoach);
   ui.settingsForm.awayPrompt.value = nextConfig.awayCoach.free_strategy_prompt || "";
   ui.settingsForm.homeFormation.value = nextConfig.match.homeFormation || "";
   ui.settingsForm.awayFormation.value = nextConfig.match.awayFormation || "";
@@ -573,6 +642,12 @@ function updateConfigSummary() {
 /** 返回教练展示名称。 */
 function coachDisplayName(coach = {}, fallback) {
   return coach.name || coach.model || coach.provider || fallback;
+}
+
+/** 密钥状态文案：优先展示已保存的 env: 引用，其次才是不可回显的原始密钥。 */
+function keyStatusText(coach = {}) {
+  if (coach.api_key_ref) return `已保存引用 ${coach.api_key_ref}，留空保留`;
+  return coach.api_key_set ? "已保存密钥，留空保留" : "未设置密钥";
 }
 
 /** 请求 JSON。 */

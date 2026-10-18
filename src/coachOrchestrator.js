@@ -413,6 +413,20 @@ export function resolveChatEndpoint(coach = {}) {
   return `${endpoint.replace(/\/+$/, "")}/chat/completions`;
 }
 
+/** 解析模型列表端点：去掉 chat completions 路径后补 /models，兼容只填 base URL 的写法。 */
+export function resolveModelsEndpoint(coach = {}) {
+  const endpoint = String(coach.endpoint || "").trim();
+  if (!endpoint) return "";
+  return `${endpoint.replace(/\/+$/, "").replace(/\/chat\/completions$/i, "")}/models`;
+}
+
+/** 从 OpenAI 兼容的 /models 响应中提取去重后的模型 id 列表。 */
+export function extractModelIds(payload) {
+  const data = Array.isArray(payload) ? payload : payload?.data;
+  if (!Array.isArray(data)) return [];
+  return [...new Set(data.map((item) => (typeof item === "string" ? item : item?.id)).filter(Boolean))];
+}
+
 /** 返回策略摘要，避免把行为权重噪声传给模型。 */
 function tacticSummary(tactics = {}) {
   return {

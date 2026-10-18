@@ -88,6 +88,9 @@ input, select { min-height: 36px; width: 100%; border: 1px solid var(--line); bo
 .checkbox input { width: auto; }
 .form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .button-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.model-pick-row { display: flex; gap: 8px; margin: -4px 0 10px; }
+.model-pick-row .btn { min-height: 32px; padding: 0 10px; font-size: 12px; white-space: nowrap; }
+.model-pick-status { display: block; margin: -6px 0 8px; min-height: 15px; color: var(--muted); font-size: 12px; }
 .muted { color: var(--muted); }
 .report-content { margin: 0; padding: 18px; min-height: 520px; white-space: pre-wrap; color: var(--text); background: #081018; }
 

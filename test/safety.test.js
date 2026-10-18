@@ -72,10 +72,10 @@ test("模型输出越权字段不会进入权威状态", () => {
   assert.equal(engine.teams.home.score, beforeScore);
 });
 
-test("脱敏保留模型 token 统计并隐藏密钥引用", () => {
+test("脱敏保留模型 token 统计和密钥引用原文", () => {
   const safe = redactSensitive({ api_key: SECRET, api_key_ref: "env:DEEPSEEK_API_KEY", api_key_set: true, access_token: "secret-token-value", input_tokens: 12, total_tokens: 34, last_tokens: { input_tokens: 5, output_tokens: 7, total_tokens: 12 } }, [SECRET]);
   assert.equal(safe.api_key, "[已脱敏]");
-  assert.equal(safe.api_key_ref, "env:DEE***");
+  assert.equal(safe.api_key_ref, "env:DEEPSEEK_API_KEY");
   assert.equal(safe.api_key_set, true);
   assert.equal(safe.access_token, "[已脱敏]");
   assert.equal(safe.input_tokens, 12);

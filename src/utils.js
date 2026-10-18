@@ -94,7 +94,8 @@ export function redactSensitive(value, extraSecrets = []) {
   const result = {};
   for (const [key, item] of Object.entries(value)) {
     if (key === "api_key_ref") {
-      result[key] = item ? maskKeyRef(String(item)) : "";
+      // env: 引用只是变量名而非密钥本体，保留原文以支持表单回显与再次保存。
+      result[key] = item ? redactText(String(item)) : "";
     } else if (SAFE_SECRET_STATUS_KEYS.has(key)) {
       result[key] = redactSensitive(item, secrets);
     } else if (TOKEN_STAT_KEYS.has(key)) {
@@ -106,13 +107,6 @@ export function redactSensitive(value, extraSecrets = []) {
     }
   }
   return result;
-}
-
-/** 隐藏密钥引用中的敏感部分。 */
-export function maskKeyRef(ref) {
-  if (!ref) return "";
-  if (ref.startsWith("env:")) return `env:${ref.slice(4, 7)}***`;
-  return "[密钥引用已脱敏]";
 }
 
 /** 判断文本中是否包含敏感信息。 */

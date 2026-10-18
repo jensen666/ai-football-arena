@@ -85,14 +85,14 @@ npm run test:e2e-note
 
 The app is usable without a real model key. In that mode, local rule coaches generate legal tactical decisions and the match can still finish normally.
 
-To use real model coaches, open the settings panel in the browser and configure `endpoint`, `model`, and an API key. As long as an `endpoint` is set, that side's coach calls the real model; leave `endpoint` empty to keep the local rule coach. The `endpoint` may be a base URL (e.g. `https://api.example.com/v1`) and is automatically completed with `/chat/completions`. The recommended key format is an environment reference such as:
+To use real model coaches, open the settings panel in the browser and configure `endpoint`, `model`, and an API key. As long as an `endpoint` is set, that side's coach calls the real model; leave `endpoint` empty to keep the local rule coach. The `endpoint` may be a base URL (e.g. `https://api.example.com/v1`) and is automatically completed with `/chat/completions`. After filling in `endpoint` and a key, click "获取模型列表" to attach the upstream model list to the `model` input for dropdown selection. The API Key field accepts either a raw key or an environment reference (recommended), such as:
 
 ```text
 env:DEEPSEEK_API_KEY
 env:OPENAI_API_KEY
 ```
 
-Saved API keys are never echoed back to the settings panel to avoid leaking secrets; the panel shows a "key saved" status and an empty key field keeps the existing key. Config changes during a match take effect on the next model request. Compatible `chat/completions` endpoints use a `messages` request shape. If a model request fails, times out, or returns an invalid decision, the engine logs the error and continues with the last valid or fallback tactic.
+Saved API keys are never echoed back to the settings panel to avoid leaking secrets; the panel shows a "key saved" or "reference saved" status, and an empty key field keeps the existing key or reference. Config changes during a match take effect on the next model request. Compatible `chat/completions` endpoints use a `messages` request shape. If a model request fails, times out, or returns an invalid decision, the engine logs the error and continues with the last valid or fallback tactic.
 
 ## Local Data And Secrets
 
@@ -132,6 +132,7 @@ docs/assets/            README images and GIFs
 - `GET /api/config`
 - `POST /api/config`
 - `POST /api/model/test`
+- `POST /api/model/list` — fetch the upstream `/models` list for the given `side`/`coach` (endpoint + API key or `env:` reference) and return selectable model ids; a blank key field reuses the saved key.
 - `POST /api/match/start`
 - `POST /api/match/pause`
 - `POST /api/match/resume`

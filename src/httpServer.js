@@ -41,6 +41,7 @@ async function routeApi(request, response, controller, url) {
   if (request.method === "GET" && url.pathname === "/api/config") return sendJson(response, 200, { ok: true, config: await controller.getConfig() });
   if (request.method === "POST" && url.pathname === "/api/config") return sendJson(response, 200, { ok: true, config: await controller.updateConfig(await readBody(request)) });
   if (request.method === "POST" && url.pathname === "/api/model/test") return sendJson(response, 200, { ok: true, result: await controller.testModel(await readBody(request)) });
+  if (request.method === "POST" && url.pathname === "/api/model/list") return sendJson(response, 200, { ok: true, result: await controller.listModels(await readBody(request)) });
   if (request.method === "POST" && url.pathname === "/api/match/start") return sendJson(response, 200, { ok: true, ...(await controller.start((await readBody(request)).config)) });
   if (request.method === "POST" && url.pathname === "/api/match/pause") return sendJson(response, 200, { ok: true, match: controller.pause() });
   if (request.method === "POST" && url.pathname === "/api/match/resume") return sendJson(response, 200, { ok: true, match: controller.resume() });

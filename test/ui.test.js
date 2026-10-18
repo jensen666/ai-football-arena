@@ -240,7 +240,7 @@ test("点击开始比赛立即进入启动状态且不重复保存配置", async
   assert.ok(app.includes("startingMatch = false;\n      latest = message.payload;"));
 });
 
-/** 设置表单应展示 API Key 保存状态，避免用户误以为密钥丢失。 */
+/** 设置表单应把 API Key 合并为单个输入框并展示保存状态，避免用户困惑。 */
 test("设置表单展示 API Key 保存状态", async () => {
   const [html, app] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
@@ -249,10 +249,16 @@ test("设置表单展示 API Key 保存状态", async () => {
   assert.ok(html.includes('id="homeKeyStatus"'));
   assert.ok(html.includes('id="awayKeyStatus"'));
   assert.ok(html.includes("留空则保留已保存密钥"));
+  assert.ok(html.includes("粘贴密钥或 env:变量名引用"));
+  assert.equal(html.includes('name="homeKeyRef"'), false);
+  assert.equal(html.includes('name="awayKeyRef"'), false);
   assert.ok(app.includes("homeKeyStatus: document.getElementById(\"homeKeyStatus\")"));
   assert.ok(app.includes("awayKeyStatus: document.getElementById(\"awayKeyStatus\")"));
-  assert.ok(app.includes("nextConfig.homeCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
-  assert.ok(app.includes("nextConfig.awayCoach.api_key_set ? \"已保存密钥，留空保留\" : \"未设置密钥\""));
+  assert.ok(app.includes("function keyStatusText(coach = {})"));
+  assert.ok(app.includes("已保存引用"));
+  assert.ok(app.includes("已保存密钥，留空保留"));
+  assert.ok(app.includes("未设置密钥"));
+  assert.ok(app.includes("keyInput.startsWith(\"env:\")"));
 });
 
 /** 比分牌新增回放入口，且不破坏原有三列网格布局。 */
@@ -299,4 +305,59 @@ test("前端渲染器支持回放 Canvas 且播放器实现 ESC 与帧率控制"
   assert.ok(styles.includes(".replay-list-card"));
   assert.ok(styles.includes(".replay-player-card"));
   assert.ok(styles.includes("#replayCanvas"));
+});
+
+/** 设置表单应支持获取模型列表，候选模型挂在 Model 输入框的 datalist 上供下拉选择。 */
+test("设置表单支持获取模型列表并选择模型", async () => {
+  const [html, app, styles] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFrontendSource(),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8")
+  ]);
+  assert.ok(html.includes('id="homeModelsBtn"'));
+  assert.ok(html.includes('id="awayModelsBtn"'));
+  assert.ok(html.includes('id="homeModelList"'));
+  assert.ok(html.includes('id="awayModelList"'));
+  assert.ok(html.includes('list="homeModelList"'));
+  assert.ok(html.includes('list="awayModelList"'));
+  assert.ok(html.includes("获取模型列表"));
+  assert.ok(html.includes('id="homeModelsStatus"'));
+  assert.ok(html.includes('id="awayModelsStatus"'));
+  assert.ok(app.includes("homeModelsBtn: document.getElementById(\"homeModelsBtn\")"));
+  assert.ok(app.includes("homeModelList: document.getElementById(\"homeModelList\")"));
+  assert.ok(app.includes("awayModelList: document.getElementById(\"awayModelList\")"));
+  assert.ok(app.includes("homeModelsStatus: document.getElementById(\"homeModelsStatus\")"));
+  assert.ok(app.includes("awayModelsStatus: document.getElementById(\"awayModelsStatus\")"));
+  assert.ok(app.includes("async function fetchModelList(side)"));
+  assert.ok(app.includes("fetchJson(\"/api/model/list\""));
+  assert.ok(app.includes("list.innerHTML = models.map"));
+  assert.ok(app.includes("模型列表获取中..."));
+  assert.ok(app.includes("点击 Model 输入框即可下拉选择"));
+  assert.ok(app.includes("function bindModelListInput(prefix)"));
+  assert.ok(app.includes("input.dataset.savedValue"));
+  assert.ok(app.includes('addEventListener("focus"'));
+  assert.ok(app.includes('addEventListener("blur"'));
+  assert.ok(styles.includes(".model-pick-row"));
+  assert.ok(styles.includes(".model-pick-status"));
+});
+
+/** 测试连接合并为单个按钮，一键并行测试双方并带进行中反馈与异常兜底。 */
+test("测试连接按钮包含进行中反馈与异常提示", async () => {
+  const [html, app] = await Promise.all([
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFrontendSource()
+  ]);
+  assert.ok(html.includes('id="testAllBtn"'));
+  assert.ok(html.includes("测试连接"));
+  assert.equal(html.includes('id="testHomeBtn"'), false);
+  assert.equal(html.includes('id="testAwayBtn"'), false);
+  assert.ok(app.includes("testAllBtn: document.getElementById(\"testAllBtn\")"));
+  const start = app.indexOf("async function testAllModels()");
+  const body = app.slice(start, start + 1400);
+  assert.ok(body.includes("ui.testAllBtn.disabled = true;"));
+  assert.ok(body.includes("连接测试进行中"));
+  assert.ok(body.includes("Promise.all"));
+  assert.ok(body.includes("catch (error)"));
+  assert.ok(body.includes("连接测试失败"));
+  assert.ok(body.includes("ui.testAllBtn.disabled = false;"));
 });

@@ -14,6 +14,11 @@ export const DIRS = {
 
 export const CONFIG_PATH = path.join(DIRS.config, "app.json");
 
+/** 返回生效的配置文件路径；测试可用 FOOTBALL_CONFIG_PATH 隔离真实配置，避免并行测试互相覆盖。 */
+export function configPath() {
+  return process.env.FOOTBALL_CONFIG_PATH ? path.resolve(process.env.FOOTBALL_CONFIG_PATH) : CONFIG_PATH;
+}
+
 export async function ensureRuntimeDirs() {
   const dirs = runtimeDirs();
   await Promise.all([DIRS.config, dirs.matches, dirs.reports, DIRS.cache].map((directory) => mkdir(directory, { recursive: true })));
@@ -30,7 +35,7 @@ export function defaultConfig() {
 export async function loadConfig() {
   await ensureRuntimeDirs();
   try {
-    const text = await readFile(CONFIG_PATH, "utf8");
+    const text = await readFile(configPath(), "utf8");
     return mergeConfig(JSON.parse(text));
   } catch {
     return defaultConfig();
@@ -46,7 +51,7 @@ export async function saveConfig(config) {
     delete merged[side].api_key_once;
     merged[side].api_key_set = apiKeySet;
   }
-  await writeFile(CONFIG_PATH, safeJson(merged), "utf8");
+  await writeFile(configPath(), safeJson(merged), "utf8");
   return merged;
 }
 

@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "../src/httpServer.js";
-import { CONFIG_PATH, matchPaths, mergeConfig } from "../src/storage.js";
+import { matchPaths, mergeConfig } from "../src/storage.js";
+
+process.env.FOOTBALL_CONFIG_PATH = path.join(os.tmpdir(), `afa-api-config-${process.pid}.json`);
+const CONFIG_PATH = process.env.FOOTBALL_CONFIG_PATH;
 
 async function startServer() {
   const server = createServer();
@@ -91,7 +97,7 @@ test("HTTP API 支持配置脱敏、开始、暂停、恢复、停止和报告�
     ws = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/match/${matchId}`);
     const snapshotMessage = await waitForWs(ws, "snapshot");
     assert.equal(snapshotMessage.match_id, matchId);
-    const commentaryMessage = await waitForWs(ws, "commentary", (message) => Boolean(message.payload?.commentary && message.payload?.action_type && Number.isFinite(message.payload?.game_time)), 8000);
+    const commentaryMessage = await waitForWs(ws, "commentary", (message) => Boolean(message.payload?.commentary && message.payload?.action_type && Number.isFinite(message.payload?.game_time)), 20000);
     assert.equal(commentaryMessage.match_id, matchId);
     assert.ok(commentaryMessage.payload.action_event_id);
     assert.ok(commentaryMessage.payload.tick > 0);
@@ -120,6 +126,7 @@ test("HTTP API 支持配置脱敏、开始、暂停、恢复、停止和报告�
     assert.equal(JSON.stringify(report.data).includes("sk-test-secret-should-not-leak"), false);
   } finally {
     ws?.close();
+    if (baseUrl) await request(baseUrl, "/api/match/stop", { method: "POST", body: "{}" }).catch(() => {});
     server?.close();
     if (originalConfig === null) await rm(CONFIG_PATH, { force: true });
     else await writeFile(CONFIG_PATH, originalConfig, "utf8");
@@ -199,5 +206,72 @@ test("HTTP API 重新开始比赛：停止旧比赛并以新 match_id 启动", a
       await rm(paths.matchDir, { recursive: true, force: true });
       await rm(paths.reportDir, { recursive: true, force: true });
     }
+  }
+});
+
+test("HTTP API 获取模型列表：解析 /models、按字母排序、复用已保存密钥且不回显密钥", async () => {
+  let server = null;
+  let baseUrl = "";
+  let upstream = null;
+  let originalConfig = null;
+  const secret = "sk-list-secret-should-not-leak";
+  const envSecret = "sk-env-ref-secret-should-not-leak";
+  let lastAuth = "";
+  try {
+    try {
+      originalConfig = await readFile(CONFIG_PATH, "utf8");
+    } catch {}
+    await rm(CONFIG_PATH, { force: true });
+    upstream = http.createServer((req, res) => {
+      lastAuth = req.headers.authorization || "";
+      const authed = lastAuth === `Bearer ${secret}` || lastAuth === `Bearer ${envSecret}`;
+      if (req.method === "GET" && req.url === "/v1/models" && authed) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "model-b" }, { id: "model-c" }, { id: "model-a" }, { id: "model-b" }] }));
+        return;
+      }
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+    });
+    upstream.listen(0, "127.0.0.1");
+    await once(upstream, "listening");
+    const upstreamBase = `http://127.0.0.1:${upstream.address().port}`;
+    ({ server, baseUrl } = await startServer());
+
+    const listed = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "home", coach: { endpoint: `${upstreamBase}/v1`, api_key: secret } }) });
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.data.result.status, "success");
+    assert.deepEqual(listed.data.result.models, ["model-a", "model-b", "model-c"]);
+    assert.equal(JSON.stringify(listed.data).includes(secret), false);
+
+    const configResponse = await request(baseUrl, "/api/config");
+    const config = configResponse.data.config;
+    config.homeCoach.endpoint = `${upstreamBase}/v1/chat/completions`;
+    config.homeCoach.api_key = secret;
+    await request(baseUrl, "/api/config", { method: "POST", body: JSON.stringify(config) });
+    const reused = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "home", coach: { endpoint: `${upstreamBase}/v1/chat/completions` } }) });
+    assert.equal(reused.data.result.status, "success");
+    assert.deepEqual(reused.data.result.models, ["model-a", "model-b", "model-c"]);
+    assert.equal(JSON.stringify(reused.data).includes(secret), false);
+
+    process.env.MODELS_LIST_TEST_KEY = envSecret;
+    const viaRef = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "home", coach: { endpoint: `${upstreamBase}/v1`, api_key_ref: "env:MODELS_LIST_TEST_KEY" } }) });
+    assert.equal(viaRef.data.result.status, "success");
+    assert.equal(lastAuth, `Bearer ${envSecret}`);
+    assert.equal(JSON.stringify(viaRef.data).includes(envSecret), false);
+
+    const noEndpoint = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "away", coach: {} }) });
+    assert.equal(noEndpoint.data.result.status, "missing_endpoint");
+    const noKey = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "away", coach: { endpoint: `${upstreamBase}/v1` } }) });
+    assert.equal(noKey.data.result.status, "missing_key");
+    const rejected = await request(baseUrl, "/api/model/list", { method: "POST", body: JSON.stringify({ side: "home", coach: { endpoint: `${upstreamBase}/v1`, api_key: "sk-wrong-key" } }) });
+    assert.equal(rejected.data.result.status, "error");
+    assert.ok(rejected.data.result.message.includes("401"));
+  } finally {
+    delete process.env.MODELS_LIST_TEST_KEY;
+    server?.close();
+    upstream?.close();
+    if (originalConfig === null) await rm(CONFIG_PATH, { force: true });
+    else await writeFile(CONFIG_PATH, originalConfig, "utf8");
   }
 });

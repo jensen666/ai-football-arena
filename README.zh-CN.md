@@ -89,14 +89,14 @@ npm run test:e2e-note
 
 不配置真实模型密钥时，应用仍然可以完整跑完比赛。本地规则教练会生成合法战术，比赛日志和报告也会正常生成。
 
-如果想让真实模型参与决策，在浏览器设置面板里填写 `endpoint`、`model` 和 API Key 即可。只要填了 `endpoint`，对应一方的教练就会调用真实模型；`endpoint` 留空则使用本地规则教练。`endpoint` 填 base 地址即可（例如 `https://api.example.com/v1`），应用会自动补全 `/chat/completions`。API Key 推荐使用环境变量引用：
+如果想让真实模型参与决策，在浏览器设置面板里填写 `endpoint`、`model` 和 API Key 即可。只要填了 `endpoint`，对应一方的教练就会调用真实模型；`endpoint` 留空则使用本地规则教练。`endpoint` 填 base 地址即可（例如 `https://api.example.com/v1`），应用会自动补全 `/chat/completions`。填好 `endpoint` 和密钥后，可点击“获取模型列表”把上游可用模型挂到 `model` 输入框上下拉选择。API Key 输入框同时接受明文密钥和环境变量引用（推荐使用环境变量引用）：
 
 ```text
 env:DEEPSEEK_API_KEY
 env:OPENAI_API_KEY
 ```
 
-为避免明文泄露，已保存的 API Key 不会回显到设置面板，面板会显示“已保存密钥”状态；留空保存即保留原密钥。比赛进行中修改配置会即时应用到下一轮模型请求。兼容 `chat/completions` 的接口会使用 `messages` 请求格式。如果模型请求失败、超时，或返回非法决策，比赛引擎会记录错误，并沿用上一轮有效战术或本地兜底战术继续比赛。
+为避免明文泄露，已保存的 API Key 不会回显到设置面板，面板会显示“已保存密钥”或“已保存引用”状态；留空保存即保留原密钥或引用。比赛进行中修改配置会即时应用到下一轮模型请求。兼容 `chat/completions` 的接口会使用 `messages` 请求格式。如果模型请求失败、超时，或返回非法决策，比赛引擎会记录错误，并沿用上一轮有效战术或本地兜底战术继续比赛。
 
 ## 本地数据和密钥
 
@@ -136,6 +136,7 @@ docs/assets/            README 图片和 GIF
 - `GET /api/config`
 - `POST /api/config`
 - `POST /api/model/test`
+- `POST /api/model/list` — 用请求体中的 `side` 与 `coach`（endpoint、API Key 或其环境变量引用）请求上游 `/models`，返回可选模型 id 列表；API Key 留空时复用该侧已保存密钥。
 - `POST /api/match/start`
 - `POST /api/match/pause`
 - `POST /api/match/resume`

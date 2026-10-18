@@ -95,20 +95,28 @@
         <section>
           <h3>主队模型</h3>
           <label>Provider<input name="homeProvider" value="local"></label>
-          <label>Model<input name="homeModel" value="rules-coach"></label>
+          <label>Model<input name="homeModel" value="rules-coach" list="homeModelList" autocomplete="off"></label>
+          <div class="model-pick-row">
+            <button class="btn" type="button" id="homeModelsBtn">获取模型列表</button>
+            <datalist id="homeModelList"></datalist>
+          </div>
+          <small class="model-pick-status" id="homeModelsStatus"></small>
           <label>Endpoint<input name="homeEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
-          <label>API Key 引用<input name="homeKeyRef" placeholder="env:DEEPSEEK_API_KEY"></label>
-          <label>API Key<input name="homeApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <label>API Key<input name="homeApiKey" type="password" autocomplete="off" placeholder="粘贴密钥或 env:变量名引用，留空则保留已保存密钥"></label>
           <small class="key-status" id="homeKeyStatus">未设置密钥</small>
           <label>自由策略提示<input name="homePrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
         </section>
         <section>
           <h3>客队模型</h3>
           <label>Provider<input name="awayProvider" value="local"></label>
-          <label>Model<input name="awayModel" value="rules-coach"></label>
+          <label>Model<input name="awayModel" value="rules-coach" list="awayModelList" autocomplete="off"></label>
+          <div class="model-pick-row">
+            <button class="btn" type="button" id="awayModelsBtn">获取模型列表</button>
+            <datalist id="awayModelList"></datalist>
+          </div>
+          <small class="model-pick-status" id="awayModelsStatus"></small>
           <label>Endpoint<input name="awayEndpoint" placeholder="https://api.example.com/v1/chat/completions"></label>
-          <label>API Key 引用<input name="awayKeyRef" placeholder="env:GLM_API_KEY"></label>
-          <label>API Key<input name="awayApiKey" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+          <label>API Key<input name="awayApiKey" type="password" autocomplete="off" placeholder="粘贴密钥或 env:变量名引用，留空则保留已保存密钥"></label>
           <small class="key-status" id="awayKeyStatus">未设置密钥</small>
           <label>自由策略提示<input name="awayPrompt" placeholder="可留空，由模型根据比赛态势自行决定"></label>
         </section>
@@ -124,8 +132,7 @@
           </div>
           <div class="button-row">
             <button class="btn primary" type="submit">保存设置</button>
-            <button class="btn" type="button" id="testHomeBtn">测试主队连接</button>
-            <button class="btn" type="button" id="testAwayBtn">测试客队连接</button>
+            <button class="btn" type="button" id="testAllBtn">测试连接</button>
           </div>
           <p id="settingsMessage" class="muted"></p>
         </section>

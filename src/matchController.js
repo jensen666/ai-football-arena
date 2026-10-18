@@ -1,5 +1,5 @@
 import { MatchEngine } from "./matchEngine.js";
-import { CoachOrchestrator, createCoachRequestBody, extractCoachDecision, resolveApiKey, resolveChatEndpoint } from "./coachOrchestrator.js";
+import { CoachOrchestrator, createCoachRequestBody, extractCoachDecision, extractModelIds, resolveApiKey, resolveChatEndpoint, resolveModelsEndpoint } from "./coachOrchestrator.js";
 import { saveMatchArtifacts } from "./reporting.js";
 import { loadConfig, mergeConfig, saveConfig, sanitizeConfig } from "./storage.js";
 import { createRng, redactSensitive } from "./utils.js";
@@ -37,16 +37,17 @@ export class MatchController {
     return sanitizeConfig(this.config, this.extraSecrets);
   }
 
-  /** 测试模型连接。 */
+  /** 测试模型连接，密钥留空时复用已保存密钥。 */
   async testModel({ side = "home", coach = {} }) {
-    const apiKey = coach.api_key || coach.api_key_once || "";
+    const effective = this.effectiveCoach(side, coach);
+    const apiKey = effective.api_key || effective.api_key_once || "";
     if (apiKey) this.extraSecrets = [...new Set([...this.extraSecrets, apiKey])];
-    if (!coach.endpoint) return { status: "success", message: "本地规则教练可用。" };
-    if (!apiKey && !coach.api_key_ref) return { status: "missing_key", message: "缺少 API Key 或环境变量引用。" };
-    const resolvedKey = resolveApiKey(coach);
+    if (!effective.endpoint) return { status: "success", message: "本地规则教练可用。" };
+    if (!apiKey && !effective.api_key_ref) return { status: "missing_key", message: "缺少 API Key 或环境变量引用。" };
+    const resolvedKey = resolveApiKey(effective);
     if (!resolvedKey) return { status: "missing_key", message: "无法解析 API Key。" };
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const timer = setTimeout(() => controller.abort(), 30_000);
     try {
       const input = {
         summary: {
@@ -58,11 +59,11 @@ export class MatchController {
           instruction: "Return one minimal legal CoachDecision JSON for connectivity testing."
         }
       };
-      const response = await fetch(resolveChatEndpoint(coach), {
+      const response = await fetch(resolveChatEndpoint(effective), {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolvedKey}` },
-        body: JSON.stringify(createCoachRequestBody(coach, input))
+        body: JSON.stringify(createCoachRequestBody(effective, input))
       });
       if (!response.ok) return { status: "error", message: `模型接口返回 ${response.status}` };
       const payload = await response.json();
@@ -70,6 +71,32 @@ export class MatchController {
       return { status: "success", message: "模型连接成功。", sample_received: Boolean(decision) };
     } catch (error) {
       return { status: "error", message: error.name === "AbortError" ? "模型连接测试超时。" : `模型连接失败：${error.message}` };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** 获取上游可用模型列表，密钥留空时复用已保存密钥。 */
+  async listModels({ side = "home", coach = {} }) {
+    const effective = this.effectiveCoach(side, coach);
+    if (effective.api_key) this.extraSecrets = [...new Set([...this.extraSecrets, effective.api_key])];
+    if (!effective.endpoint) return { status: "missing_endpoint", message: "请先填写 Endpoint；本地规则教练无需获取模型列表。" };
+    const resolvedKey = resolveApiKey(effective);
+    if (!resolvedKey) return { status: "missing_key", message: "缺少 API Key 或环境变量引用。" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(resolveModelsEndpoint(effective), {
+        method: "GET",
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${resolvedKey}` }
+      });
+      if (!response.ok) return { status: "error", message: `模型接口返回 ${response.status}` };
+      const models = extractModelIds(await response.json()).sort((a, b) => a.localeCompare(b));
+      if (!models.length) return { status: "error", message: "模型接口未返回可用模型列表。" };
+      return { status: "success", message: `获取到 ${models.length} 个模型。`, models };
+    } catch (error) {
+      return { status: "error", message: error.name === "AbortError" ? "获取模型列表超时。" : `获取模型列表失败：${error.message}` };
     } finally {
       clearTimeout(timer);
     }
@@ -172,17 +199,32 @@ export class MatchController {
     return { ...this.currentPayload(), report_ready: true, report_paths: redactSensitive(artifacts.paths, this.extraSecrets) };
   }
 
-  /** 合并配置时保留已保存密钥。 */
+  /** 合并配置时以当前配置为基底做增量更新，并保留已保存密钥；显式改用 env: 引用时清除旧密钥，避免旧密钥优先生效。 */
   withSavedKeys(input = {}) {
-    const merged = mergeConfig(input);
+    const base = this.config || {};
+    const merged = mergeConfig({
+      homeCoach: { ...(base.homeCoach || {}), ...(input.homeCoach || {}) },
+      awayCoach: { ...(base.awayCoach || {}), ...(input.awayCoach || {}) },
+      match: { ...(base.match || {}), ...(input.match || {}) }
+    });
     for (const side of ["homeCoach", "awayCoach"]) {
       const incoming = input?.[side] || {};
       const savedKey = this.config?.[side]?.api_key || "";
       const nextKey = incoming.api_key || incoming.api_key_once || "";
       if (nextKey) merged[side].api_key = nextKey;
+      else if (incoming.api_key_ref) merged[side].api_key = "";
       else if (savedKey) merged[side].api_key = savedKey;
     }
     return merged;
+  }
+
+  /** 合并提交的配置与已保存配置：密钥留空时复用已保存密钥，显式 env: 引用优先于旧密钥。 */
+  effectiveCoach(side, coach = {}) {
+    const saved = this.config?.[side === "away" ? "awayCoach" : "homeCoach"] || {};
+    const effective = { ...saved, ...coach };
+    effective.api_key_ref = coach.api_key_ref || saved.api_key_ref || "";
+    effective.api_key = coach.api_key || coach.api_key_once || (coach.api_key_ref ? "" : saved.api_key || "");
+    return effective;
   }
 
   /** 收集需要额外替换的密钥文本。 */
