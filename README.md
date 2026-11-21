@@ -31,6 +31,10 @@ The browser UI is in Simplified Chinese.
 
 ![Pass, shot and ball-flight sequence](docs/assets/kick-sequence-10s.gif)
 
+▶ [Watch the 60 fps demo video (MP4)](docs/assets/match-60fps.mp4) — 16 seconds recorded directly from the live canvas at 1644×1038, including a goal and the restart.
+
+> GitHub shows repository MP4 files in a player; if the link only downloads, open it locally.
+
 ## Install
 
 Requirements:

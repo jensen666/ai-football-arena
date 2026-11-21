@@ -29,6 +29,10 @@ AI Football Arena 是一个本地运行的 11v11 足球比赛模拟器。两个 
 
 ![传球、射门与球路演示](docs/assets/kick-sequence-10s.gif)
 
+▶ [观看 60fps 演示视频（MP4）](docs/assets/match-60fps.mp4) —— 16 秒，直接录制自实时画布（1644×1038），包含进球与重新开球。
+
+> GitHub 会在仓库页内直接播放 MP4；若链接只是下载，请下载后用本地播放器打开。
+
 ## 安装
 
 环境要求：
