@@ -6,7 +6,7 @@ AI Football Arena is a local 11v11 football simulation playground. Two AI coache
 
 It can run without any model API key by using built-in rule coaches, so the project is easy to try locally. If you add OpenAI/DeepSeek-compatible `chat/completions` settings, the coaches can call real models for tactical decisions.
 
-![AI Football Arena match simulation](docs/assets/match-simulation.gif)
+![AI Football Arena live match with interpolated player and ball movement](docs/assets/match-simulation.gif)
 
 ## Features
 
@@ -27,7 +27,9 @@ It can run without any model API key by using built-in rule coaches, so the proj
 | --- | --- |
 | ![Match overview](docs/assets/match-overview.png) | ![Match flow](docs/assets/match-flow.png) |
 
-![Kick and ball movement sequence](docs/assets/kick-sequence-10s.gif)
+The browser UI is in Simplified Chinese.
+
+![Pass, shot and ball-flight sequence](docs/assets/kick-sequence-10s.gif)
 
 ## Install
 

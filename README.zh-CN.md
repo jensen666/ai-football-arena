@@ -6,7 +6,7 @@ AI Football Arena 是一个本地运行的 11v11 足球比赛模拟器。两个 
 
 项目不配置模型 API Key 也能运行：默认会使用本地规则教练生成合法战术，所以可以直接当成一个本地足球模拟小玩具来体验。配置 OpenAI / DeepSeek 兼容的 `chat/completions` 接口后，双方教练可以调用真实模型参与战术决策。
 
-![AI Football Arena 比赛模拟](docs/assets/match-simulation.gif)
+![AI Football Arena 比赛画面（动帧插值动画）](docs/assets/match-simulation.gif)
 
 ## 功能
 
@@ -27,7 +27,7 @@ AI Football Arena 是一个本地运行的 11v11 足球比赛模拟器。两个 
 | --- | --- |
 | ![比赛总览](docs/assets/match-overview.png) | ![比赛推进](docs/assets/match-flow.png) |
 
-![踢球和球路过程](docs/assets/kick-sequence-10s.gif)
+![传球、射门与球路演示](docs/assets/kick-sequence-10s.gif)
 
 ## 安装
 
