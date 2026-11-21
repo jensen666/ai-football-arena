@@ -5,11 +5,13 @@ import { defaultConfig } from "../src/storage.js";
 import { createMirrorTeams } from "../src/teamFactory.js";
 import { createRng } from "../src/utils.js";
 async function readFrontendSource() {
-  const [app, renderer] = await Promise.all([
+  const [app, renderer, poses] = await Promise.all([
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
-    readFile(new URL("../public/pitchRenderer.js", import.meta.url), "utf8")
+    readFile(new URL("../public/pitchRenderer.js", import.meta.url), "utf8"),
+    // 渲染层姿态逻辑已拆分到 playerPose.js，文本断言需要把两者合并检查。
+    readFile(new URL("../public/playerPose.js", import.meta.url), "utf8")
   ]);
-  return `${app}\n${renderer}`;
+  return `${app}\n${renderer}\n${poses}`;
 }
 
 /** 前端默认显示不能回退到旧模型名称。 */
@@ -28,7 +30,8 @@ test("前端默认显示和启动配置不再硬编码旧模型队名", async ()
   assert.ok(app.includes("return coach.name || coach.model || coach.provider || fallback;"));
   assert.equal(app.includes("config?.homeCoach || homeCoach"), false);
   assert.equal(app.includes("config?.awayCoach || awayCoach"), false);
-  assert.ok(app.includes("smoothDrawState"));
+  assert.ok(app.includes("sampleAt(streamState"));
+  assert.ok(app.includes("frameFromMotion"));
   assert.ok(app.includes("drawGoal"));
   assert.ok(styles.includes("border-radius: 18px"));
 });
@@ -60,8 +63,8 @@ test("前端绘制球员时不使用显示层重叠偏移", async () => {
   assert.equal(app.includes("occupied = new Map"), false);
   assert.equal(app.includes("point.x += Math.cos"), false);
   assert.equal(app.includes("point.y += Math.sin"), false);
-  assert.match(app, /drawPlayer\(player, side, width, height, drawState, isHolder, time, isPassReceiver\)/);
-  assert.match(app, /function drawPlayer\(player, side, width, height, state, isHolder = false, time = performance\.now\(\), isPassReceiver = false\) \{\n  const point = toCanvas\(player, width, height\);/);
+  assert.match(app, /function drawPlayer\(player, side, viewObject, state, isHolder = false, time = performance\.now\(\), isPassReceiver = false/);
+  assert.match(app, /const point = toCanvas\(player, viewObject\);/, "球员直接用真实坐标投影，不做显示层偏移");
 });
 
 /** 默认队名兜底不绑定具体模型品牌。 */
@@ -111,6 +114,10 @@ test("前端包含实时播报列表与去重截断逻辑", async () => {
   assert.ok(app.includes("commentaryFeed.slice(-COMMENTARY_LIMIT).reverse()"));
   assert.ok(app.includes("index === 0 ? \"latest\" : \"\""));
   assert.ok(app.includes("ui.commentaryFeed.scrollTop = 0;"));
+  assert.ok(app.includes("commentaryNodeById"));
+  assert.ok(app.includes("ui.commentaryFeed.insertBefore"));
+  assert.ok(app.includes("commentaryPlaceholder"));
+  assert.equal(app.includes("ui.commentaryFeed.innerHTML = items.map"), false, "播报不应每次整体重建 innerHTML");
   assert.ok(styles.includes(".commentary-list"));
   assert.ok(styles.includes(".commentary-item.latest"));
   assert.ok(styles.includes("grid-template-columns: 44px 1fr"));
@@ -134,7 +141,8 @@ test("前端包含高低球和射门球路可视化", async () => {
   assert.ok(app.includes("const lift ="));
   assert.ok(app.includes("const ballY = point.y - lift"));
   assert.ok(app.includes("goal_shot"));
-  assert.ok(app.includes("VISUAL_EFFECT_MS = 1600"));
+  assert.ok(app.includes("estimateEffectDurationMs"), "特效时长应按轨迹/飞行速度计算");
+  assert.ok(app.includes("durationMs"));
 });
 
 test("球门使用 2.5D 立体框架和球网绘制", async () => {
@@ -156,7 +164,7 @@ test("主客队门将使用不同球衣颜色和队伍识别边", async () => {
   assert.ok(app.includes("accent: \"#ff3b30\""));
   assert.ok(app.includes("drawKeeperGlove"));
   assert.ok(app.includes("ctx.moveTo(-unit * 0.62"));
-  assert.ok(app.includes("palette.number"));
+  assert.ok(app.includes("playerKitPalette(side, player.position === \"GK\").number"));
   assert.equal(app.includes("goalkeeper ? \"#f4d06f\""), false);
 });
 
@@ -167,7 +175,7 @@ test("前端包含球员动作姿态表现", async () => {
   assert.ok(app.includes("PLAYER_ACTION_SYSTEM"));
   assert.ok(app.includes("playerPose"));
   assert.ok(app.includes("playerActionKey"));
-  assert.ok(app.includes("movementPose"));
+  assert.ok(app.includes("createPoseTracker"), "跑动姿态已改为逐帧速度驱动");
   assert.ok(app.includes("activePlayerAction"));
   assert.ok(app.includes("drawMascotLimbs"));
   assert.ok(app.includes("drawMascotBody"));
@@ -237,7 +245,8 @@ test("点击开始比赛立即进入启动状态且不重复保存配置", async
   assert.ok(startMatchBody.includes("fetchJson(\"/api/match/start\""));
   assert.equal(startMatchBody.includes("fetchJson(\"/api/config\""), false);
   assert.ok(app.includes("ui.startBtn.disabled = running || startingMatch;"));
-  assert.ok(app.includes("startingMatch = false;\n      latest = message.payload;"));
+  assert.ok(app.includes("startingMatch = false;\n"));
+  assert.match(app, /startingMatch = false;\s+latest = message\.payload;/, "快照到达后应复位启动状态并替换 latest");
 });
 
 /** 设置表单应把 API Key 合并为单个输入框并展示保存状态，避免用户困惑。 */
@@ -360,4 +369,59 @@ test("测试连接按钮包含进行中反馈与异常提示", async () => {
   assert.ok(body.includes("catch (error)"));
   assert.ok(body.includes("连接测试失败"));
   assert.ok(body.includes("ui.testAllBtn.disabled = false;"));
+});
+
+/** 动帧缓冲 + 时间戳插值：WS 消息只入缓冲/更新标量，绘制循环负责插值与 UI 合批刷新。 */
+test("前端使用动帧缓冲插值并在绘制循环内合批刷新 UI", async () => {
+  const app = await readFrontendSource();
+  assert.ok(app.includes('from "./interpolation.js"'));
+  assert.ok(app.includes("createStreamState"));
+  assert.ok(app.includes("pushFrame(streamState, frame, receivedAt)"));
+  assert.ok(app.includes("pushFrame(streamState, frameFromSnapshot(latest), receivedAt)"));
+  assert.ok(app.includes("sampleAt(streamState, time, INTERPOLATION_DELAY_MS)"));
+  assert.ok(app.includes("latestFrame(streamState)"));
+  assert.ok(app.includes('message.type === "motion"'));
+  assert.ok(app.includes("let uiDirty = false;"));
+  assert.ok(app.includes("function queueUiUpdate()"));
+
+  const drawStart = app.indexOf("function drawLoop(time)");
+  const drawEnd = app.indexOf("function formConfig()");
+  const drawBody = app.slice(drawStart, drawEnd);
+  assert.ok(drawBody.includes("if (uiDirty)"), "UI 刷新应在绘制循环内合批执行");
+  assert.ok(drawBody.includes("drawPitch(composeDrawState(time), time)"), "保持 drawPitch(state, time) 调用签名");
+  assert.ok(drawBody.includes("applyFrameToDrawState(createDrawStateCache(template, drawCache), frame)"));
+  assert.equal(drawBody.includes("smoothDrawState"), false, "主渲染路径不应再使用快照脉冲平滑");
+
+  const motionStart = app.indexOf("function handleMotionMessage(payload, receivedAt)");
+  const motionEnd = app.indexOf("function resetStreamForMatch(matchId = null)");
+  const motionBody = app.slice(motionStart, motionEnd);
+  assert.ok(motionBody.includes("pushFrame(streamState, frame, receivedAt)"));
+  assert.ok(motionBody.includes("Object.assign(latest, frameScalars(frame))"));
+  assert.ok(motionBody.includes("refreshScoreboardText()"));
+  assert.equal(motionBody.includes("updateUi()"), false, "动帧消息不得触发全量 UI 刷新");
+
+  const replayStart = app.indexOf("function replayLoop(time)");
+  const replayEnd = app.indexOf("function stopReplayPlayback()");
+  const replayBody = app.slice(replayStart, replayEnd);
+  assert.ok(replayBody.includes("interpolateReplayFrames"), "回放应在相邻帧之间插值");
+  assert.ok(replayBody.includes("FRAME_INTERVAL_MS"), "回放保持 30fps 帧时间轴");
+  assert.ok(app.includes("reducedMotionQuery?.matches"), "prefers-reduced-motion 时直接画最新帧");
+});
+
+/** 控制、停止与报告请求失败时需要给出提示，不能产生未处理的 Promise 拒绝。 */
+test("暂停停止与报告请求包含失败兜底", async () => {
+  const app = await readFrontendSource();
+  const controlStart = app.indexOf("async function postControl(action)");
+  const controlEnd = app.indexOf("async function restartMatch()");
+  const controlBody = app.slice(controlStart, controlEnd);
+  assert.ok(controlBody.includes("catch (error)"));
+  assert.ok(controlBody.includes("操作失败："));
+  assert.ok(controlBody.includes("停止比赛失败："));
+
+  const reportStart = app.indexOf("async function openReport()");
+  const reportEnd = app.indexOf("/** 打开回放列表弹窗。 */");
+  const reportBody = app.slice(reportStart, reportEnd);
+  assert.ok(reportStart > 0 && reportEnd > reportStart);
+  assert.ok(reportBody.includes("catch (error)"));
+  assert.ok(reportBody.includes("报告加载失败："));
 });

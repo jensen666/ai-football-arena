@@ -44,6 +44,19 @@ function waitForWs(ws, type, predicate = () => true, timeout = 1200) {
   });
 }
 
+/** 收集指定时间段内的全部 WebSocket 消息，用于统计消息类型与频率。 */
+function collectWsMessages(ws, duration) {
+  return new Promise((resolve) => {
+    const messages = [];
+    const onMessage = (event) => messages.push(JSON.parse(event.data));
+    ws.addEventListener("message", onMessage);
+    setTimeout(() => {
+      ws.removeEventListener("message", onMessage);
+      resolve(messages);
+    }, duration);
+  });
+}
+
 test("配置合并会规范化本地演示比赛时长", () => {
   assert.equal(mergeConfig({}).match.matchMinutes, 90);
   assert.equal(mergeConfig({ match: { matchMinutes: 12 } }).match.matchMinutes, 12);
@@ -97,6 +110,17 @@ test("HTTP API 支持配置脱敏、开始、暂停、恢复、停止和报告�
     ws = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/match/${matchId}`);
     const snapshotMessage = await waitForWs(ws, "snapshot");
     assert.equal(snapshotMessage.match_id, matchId);
+    // 握手首帧绕过 broadcast，仍必须保持脱敏。
+    assert.equal(JSON.stringify(snapshotMessage).includes(secret), false);
+    // 开球后应收到 10Hz 动帧；3 秒内预期约 30 条，放宽到 >=5 以适配负载波动。
+    const motionMessage = await waitForWs(ws, "motion", (message) => Array.isArray(message.payload?.players), 3000);
+    assert.equal(motionMessage.match_id, matchId);
+    assert.ok(motionMessage.payload.players.length > 0);
+    const feed = await collectWsMessages(ws, 3000);
+    const motionMessages = feed.filter((message) => message.type === "motion");
+    assert.ok(motionMessages.length >= 5, `3 秒内 motion 消息数量应 >= 5，实际 ${motionMessages.length}`);
+    assert.ok(motionMessages.every((message) => Array.isArray(message.payload?.players)));
+    assert.equal(feed.some((message) => message.type === "tick"), false, "旧 tick 类型消息不应再出现");
     const commentaryMessage = await waitForWs(ws, "commentary", (message) => Boolean(message.payload?.commentary && message.payload?.action_type && Number.isFinite(message.payload?.game_time)), 20000);
     assert.equal(commentaryMessage.match_id, matchId);
     assert.ok(commentaryMessage.payload.action_event_id);
@@ -123,7 +147,21 @@ test("HTTP API 支持配置脱敏、开始、暂停、恢复、停止和报告�
     const report = await request(baseUrl, `/api/reports/${matchId}`);
     assert.equal(report.response.status, 200);
     assert.ok(report.data.summary.includes("赛后总结"));
+    // 报告接口默认瘦身：不再返回整份对局日志。
+    assert.equal(Object.hasOwn(report.data, "log"), false);
     assert.equal(JSON.stringify(report.data).includes("sk-test-secret-should-not-leak"), false);
+    // 显式 include_log=1 时才附带脱敏后的日志。
+    const reportWithLog = await request(baseUrl, `/api/reports/${matchId}?include_log=1`);
+    assert.equal(reportWithLog.response.status, 200);
+    assert.ok(reportWithLog.data.log && typeof reportWithLog.data.log === "object");
+    assert.equal(JSON.stringify(reportWithLog.data).includes("sk-test-secret-should-not-leak"), false);
+    // 日志超过 2MB 时只返回截断标记，不把整份大日志读进响应。
+    await writeFile(matchPaths(matchId).matchLog, `{"padding":"${"x".repeat(2 * 1024 * 1024 + 1)}"}`);
+    const truncated = await request(baseUrl, `/api/reports/${matchId}?include_log=1`);
+    assert.equal(truncated.response.status, 200);
+    assert.equal(truncated.data.log, null);
+    assert.equal(truncated.data.log_truncated, true);
+    assert.ok(truncated.data.log_bytes > 2 * 1024 * 1024);
   } finally {
     ws?.close();
     if (baseUrl) await request(baseUrl, "/api/match/stop", { method: "POST", body: "{}" }).catch(() => {});

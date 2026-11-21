@@ -12,9 +12,11 @@ It can run without any model API key by using built-in rule coaches, so the proj
 
 - Live 11v11 match simulation with possession, passing, shots, interceptions, fouls, cards, substitutions, set pieces, and reports.
 - Canvas-based 2D pitch with players, ball movement, score, timer, formations, commentary, and key events.
+- Smooth pitch animation: the server streams lightweight motion frames at 10 Hz and the browser interpolates player/ball positions against a 120 ms playback buffer, so movement follows the display refresh rate instead of stepping once per snapshot; player stride and facing follow the interpolated velocity.
+- High-DPI canvas: the pitch backing store follows the displayed size and device pixel ratio, the static pitch is cached offscreen, and player/ball shadows are pre-rendered instead of using per-entity blur.
 - Goal replay: click the replay button next to the away team name to open a list of goals; select one to watch the 10 seconds before and 3 seconds after the goal in an independent modal player. Lower the "goal pace multiplier" in settings to make goals happen faster during testing.
 - Model coach loop with validated tactical JSON, fallback decisions, risk labels, and visible model latency.
-- Pre-match loading overlay: while both coaches request their first-turn tactics from the model before kickoff, the pitch shows a "coaches are drafting tactics" overlay with a live, locally-ticked elapsed timer so the UI is never silent during the pre-match wait; coach status labels are localized (e.g. "drafting", "validating", "ready").
+- Pre-match loading overlay: while both coaches request their first-turn tactics from the model before kickoff, the pitch shows a "coaches are drafting tactics" overlay with a live, locally-ticked elapsed timer so the UI is never silent during the pre-match wait; coach status labels are localized to Chinese.
 - Works offline with local rule coaches when no API key is configured.
 - Local HTTP API and WebSocket updates for the browser UI.
 - Deterministic and safety-focused tests for engine rules, tactics, commentary, API behavior, and secret masking.
@@ -113,7 +115,9 @@ Before publishing a fork or old local history, rotate any real API keys that may
 ```text
 public/                 Browser UI
   app.js                UI state and API/WebSocket flow
+  interpolation.js      Motion stream buffering and timestamp interpolation
   pitchRenderer.js      Canvas pitch rendering
+  playerPose.js         Speed-driven player stride, heading, and action poses
   styles.css            UI styling
 src/                    Runtime and match engine
   engine/movement.js    Movement and spacing logic
@@ -139,7 +143,8 @@ docs/assets/            README images and GIFs
 - `POST /api/match/stop`
 - `POST /api/match/restart` — 停止当前比赛（生成报告）并使用最新配置开启新比赛，返回新 `match_id` 与 `restarted_from`（旧 `match_id`，无旧比赛时为 `null`）。
 - `GET /api/match/current`
-- `GET /api/reports/{match_id}`
+- `GET /api/match/replay/{replay_id}` — return one recorded goal replay (frames are recorded at 30 Hz, 10 seconds before and 3 seconds after the goal).
+- `GET /api/reports/{match_id}` — return `{match_id, summary, report}`; pass `?include_log=1` to attach the full match log (logs over 2 MB are truncated and report `log_truncated`).
 
 ## WebSocket
 
@@ -147,7 +152,15 @@ docs/assets/            README images and GIFs
 WS /ws/match/{match_id}
 ```
 
-The WebSocket pushes match snapshots, ticks, events, commentary, coach decisions, reports, and errors. Messages are designed not to expose raw API keys or local sensitive paths.
+Message types:
+
+- `motion` — 10 Hz lightweight position stream (`tick`, `state`, `score`, `clock`, `ball`, `players[{team_id,id,x,y,vx,vy}]`), used for client-side interpolation.
+- `snapshot` — full match snapshot at 1 Hz and on every state change (teams, tactics, stats, recent events, coach dashboard, replays).
+- `event` / `commentary` — match events and live commentary items.
+- `coach` — coach dashboard updates (deduplicated, at most 4 Hz).
+- `report` — sent when the post-match report is ready.
+
+Messages are designed not to expose raw API keys or local sensitive paths.
 
 ## License
 

@@ -28,28 +28,24 @@ export function installMovementMethods(MatchEngine) {
   targetMoveWeights,
   separateTeamTargets,
   clampPlayerPosition,
-  separateTeamPositions
+  separateTeamPositions,
+  resolvePendingBallArrivals
   });
 }
 
+// 球员运动加速度限制（单位/ tick）：加速慢、减速快，避免瞬间满速和急停。
+const MAX_ACCELERATION_PER_TICK = 0.025;
+const MAX_DECELERATION_PER_TICK = 0.05;
+const MIN_MOVE_STEP = 0.02;
+
+/** 推进双方球员与足球：球员按分级目标速度+加速度跑位，足球按飞行速度或跟随速度移动。 */
 function updatePlayers() {
   for (const side of ["home", "away"]) {
     const players = getOnFieldPlayers(this.teams[side]);
+    // 记录移动前坐标，分离逻辑跑完后用最终坐标差写 vx/vy，保证与渲染位移严格一致。
+    const startPositions = players.map((player) => ({ x: player.x, y: player.y }));
     for (const player of players) {
-      const dx = player.targetX - player.x;
-      const dy = player.targetY - player.y;
-      const gap = Math.hypot(dx, dy);
-      const maxStep = player.position === "GK" ? 0.16 : 0.22 + player.attributes.speed / 700;
-      // 贴近目标时直接吸附，避免最小步长 0.035 造成在目标点两侧反复超调，
-      // 从而消除停下来后的规律性原地蹭步。
-      if (gap <= 0.12) {
-        player.x = player.targetX;
-        player.y = player.targetY;
-      } else if (gap > 0.001) {
-        const step = Math.min(gap, maxStep, Math.max(0.035, gap * 0.18));
-        player.x += (dx / gap) * step;
-        player.y += (dy / gap) * step;
-      }
+      movePlayerTowardTarget(player);
       const cost = this.staminaTickCost(this.teams[side].tactics);
       player.stamina = clamp(player.stamina - cost, 0, player.staminaMax);
     }
@@ -57,27 +53,78 @@ function updatePlayers() {
     if (this.ball.holderTeam === side) lockedPositionIds.add(this.ball.holderId);
     if (this.passReception?.teamId === side) lockedPositionIds.add(this.passReception.receiverId);
     this.separateTeamPositions(side, players, lockedPositionIds);
+    players.forEach((player, index) => {
+      player.vx = player.x - startPositions[index].x;
+      player.vy = player.y - startPositions[index].y;
+    });
   }
   const holder = this.teams[this.possessionTeam].players.find((player) => player.id === this.ball.holderId);
   const targetX = Number.isFinite(this.ball.targetX) ? this.ball.targetX : holder?.x;
   const targetY = Number.isFinite(this.ball.targetY) ? this.ball.targetY : holder?.y;
-  if (Number.isFinite(targetX) && Number.isFinite(targetY)) {
-    const dx = targetX - this.ball.x;
-    const dy = targetY - this.ball.y;
-    const gap = Math.hypot(dx, dy);
-    const step = Math.min(gap, 0.55 + gap * 0.004);
-    if (gap > 0.001) {
-      const moveX = (dx / gap) * step;
-      const moveY = (dy / gap) * step;
-      this.ball.x += moveX;
-      this.ball.y += moveY;
-      this.ball.vx = moveX;
-      this.ball.vy = moveY;
-    } else {
-      this.ball.vx = 0;
-      this.ball.vy = 0;
-    }
-    this.completePassReceptionIfReady();
+  if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
+  const dx = targetX - this.ball.x;
+  const dy = targetY - this.ball.y;
+  const gap = Math.hypot(dx, dy);
+  // 传球/射门/拦截等动作球按 flightSpeed 飞行，普通带球沿用原跟随速度。
+  const flightSpeed = Number.isFinite(this.ball.flightSpeed) ? this.ball.flightSpeed : 0.55 + gap * 0.004;
+  const step = Math.min(gap, flightSpeed);
+  if (gap > 0.001) {
+    const moveX = (dx / gap) * step;
+    const moveY = (dy / gap) * step;
+    this.ball.x += moveX;
+    this.ball.y += moveY;
+    this.ball.vx = moveX;
+    this.ball.vy = moveY;
+  } else {
+    this.ball.vx = 0;
+    this.ball.vy = 0;
+  }
+  this.resolvePendingBallArrivals();
+  this.completePassReceptionIfReady();
+}
+
+/** 单个球员朝跑位目标推进：分级目标速度 + 加速/减速上限，贴身目标直接吸附。 */
+function movePlayerTowardTarget(player) {
+  const dx = player.targetX - player.x;
+  const dy = player.targetY - player.y;
+  const gap = Math.hypot(dx, dy);
+  if (!Number.isFinite(gap)) return;
+  const baseSpeed = player.position === "GK" ? 0.16 : 0.22 + (player.attributes?.speed ?? 60) / 700;
+  // 距离目标越近目标速度越低：远距离全速、中距离 75%、贴身 45%，减少到点过冲。
+  const speedFactor = gap < 2.5 ? 0.45 : gap < 7 ? 0.75 : 1;
+  const targetSpeed = baseSpeed * speedFactor;
+  const currentSpeed = Number.isFinite(player.speed) ? player.speed : 0;
+  player.speed = currentSpeed < targetSpeed ? Math.min(targetSpeed, currentSpeed + MAX_ACCELERATION_PER_TICK) : Math.max(targetSpeed, currentSpeed - MAX_DECELERATION_PER_TICK);
+  // 贴近目标时直接吸附，避免最小步长在目标点两侧反复超调造成原地蹭步。
+  if (gap <= 0.12) {
+    player.x = player.targetX;
+    player.y = player.targetY;
+    return;
+  }
+  const step = Math.min(gap, Math.max(MIN_MOVE_STEP, player.speed));
+  player.x += (dx / gap) * step;
+  player.y += (dy / gap) * step;
+}
+
+/** 足球到达动作目标点后结算：拦截延迟换球权，或射门后触发的定位球重启。 */
+function resolvePendingBallArrivals() {
+  if (!Number.isFinite(this.ball.targetX) || !Number.isFinite(this.ball.targetY)) return;
+  if (distance(this.ball, { x: this.ball.targetX, y: this.ball.targetY }) > 0.6) return;
+  const interception = this.pendingInterception;
+  if (interception) {
+    this.possessionTeam = interception.teamId;
+    this.ball.holderTeam = interception.teamId;
+    this.ball.holderId = interception.playerId ?? null;
+    // clearBallTarget 内部会同时清掉 flightSpeed 与 pendingInterception。
+    this.clearBallTarget();
+    this.pendingInterception = null;
+    this.resetCarryTracker();
+  }
+  const pendingRestart = this.pendingRestart;
+  if (pendingRestart) {
+    // 先清空再重启，避免 simulateBallOut 新设的目标点让到达判定在同一 tick 内重复触发。
+    this.pendingRestart = null;
+    this.simulateBallOut(pendingRestart.restart);
   }
 }
 
@@ -88,8 +135,8 @@ function updateDynamicTargets() {
   const receptionPoint = this.passReception ? { x: this.passReception.targetX, y: this.passReception.targetY } : null;
   const pressurePoint = receptionPoint || (holder && this.isBallWithPlayer(holder, 7) ? holder : { x: Number.isFinite(this.ball.targetX) ? this.ball.targetX : this.ball.x, y: Number.isFinite(this.ball.targetY) ? this.ball.targetY : this.ball.y });
   // 始终保留小幅相位摆动，使球员在球粘脚下时也持续走位；
-  // 各球员相位已按 id 错开，不会出现同步晃动。
-  const weaveIntensity = 1;
+  // 各球员相位已按 id 错开，不会出现同步晃动；振幅压到 0.25 避免无球球员大幅乱跑。
+  const weaveIntensity = 0.25;
   for (const side of ["home", "away"]) {
     const team = this.teams[side];
     const direction = side === "home" ? 1 : -1;
@@ -170,8 +217,8 @@ function updateDynamicTargets() {
       if (presserIndex !== -1) {
         const tightGap = team.tactics.pressingIntensity === "high" ? 3.6 : team.tactics.pressingIntensity === "low" ? 6.4 : 4.8;
         const coverGap = team.tactics.pressingIntensity === "high" ? 6.8 : team.tactics.pressingIntensity === "low" ? 10 : 8.4;
-        // 逼抢距离做呼吸式波动，使防守球员持续上抢-回退，避免贴身后静止
-        const pressureGap = (presserIndex === 0 ? tightGap : coverGap) + Math.sin(phase) * 0.8;
+        // 逼抢距离做呼吸式波动，使防守球员持续上抢-回退，避免贴身后静止；振幅 0.2 避免大幅抖动。
+        const pressureGap = (presserIndex === 0 ? tightGap : coverGap) + Math.sin(phase) * 0.2;
         const channelOffset = presserIndex === 0 ? this.pressLaneOffset(player, pressurePoint) : baseY < pressurePoint.y ? -4 : 4;
         const heightBoost = team.tactics.pressingHeight === "high" ? 0.06 : team.tactics.pressingHeight === "low" ? -0.08 : 0;
         const pressureWeight = clamp(pressureStrength - presserIndex * 0.18 + heightBoost, 0.35, 0.82);

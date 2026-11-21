@@ -86,6 +86,10 @@ export function createTeam(id, name, formation, forms, mirror) {
       yellowCards: 0,
       x: 50,
       y: 50,
+      // 运动学字段：vx/vy 为上一 tick 的位移，speed 为当前速度标量，供加速度模型与前端动帧使用。
+      vx: 0,
+      vy: 0,
+      speed: 0,
       targetX: 50,
       targetY: 50,
       lastAction: "站位"

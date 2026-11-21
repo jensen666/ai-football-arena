@@ -170,11 +170,21 @@ test("比赛能从赛前推进到完场并生成每 5 tick 压缩快照", () => 
   assert.ok((eventCounts.penalty_awarded || 0) <= 3, `点球过多：${eventCounts.penalty_awarded || 0}`);
   assert.ok((eventCounts.red_card || 0) <= 2, `红牌过多：${eventCounts.red_card || 0}`);
   const uniqueTicks = [...new Set(engine.matchLog.engine_tick_log.map((item) => item.tick))].sort((a, b) => a - b);
+  // tick 日志改为环形保留最近 4000 条，全场约 3.24 万条，因此只校验保留窗口内的快照连续性。
+  assert.ok(uniqueTicks.length <= 4000, `快照日志未限长：${uniqueTicks.length}`);
+  assert.equal(uniqueTicks.at(-1), engine.tick, "终场 tick 缺少快照");
   for (let index = 1; index < uniqueTicks.length; index += 1) {
     assert.ok(uniqueTicks[index] - uniqueTicks[index - 1] <= 5, `快照间隔过大：${uniqueTicks[index - 1]} -> ${uniqueTicks[index]}`);
   }
+  // 事件不再强制同 tick 记录快照，改为校验每个事件前后 5 tick 内存在一条快照。
+  const retainedFrom = uniqueTicks[0];
+  const coveredTicks = new Set();
+  for (const tick of uniqueTicks) {
+    for (let offset = -5; offset <= 5; offset += 1) coveredTicks.add(tick + offset);
+  }
   for (const event of engine.matchLog.match_event_log) {
-    assert.ok(uniqueTicks.includes(event.tick), `关键事件 tick ${event.tick} 缺少快照`);
+    if (event.tick < retainedFrom) continue;
+    assert.ok(coveredTicks.has(event.tick), `关键事件 tick ${event.tick} 附近缺少快照`);
   }
 });
 
@@ -197,7 +207,8 @@ test("多 seed 全场事件节奏保持在足球比赛合理区间", () => {
     totalGoalsAcrossSeeds += totalGoals;
     assert.ok(totalGoals <= 8, `${seed} 全场进球过多：${totalGoals}`);
     assert.ok(totalXg <= 4.5, `${seed} 全场 xG 过高：${totalXg}`);
-    assert.ok(totalShots <= 36, `${seed} 全场射门过多：${totalShots}`);
+    // 新运动模型（加速度分级 + 真实飞行时间）会让射门节奏小幅上移，上限从 36 放宽到 42。
+    assert.ok(totalShots <= 42, `${seed} 全场射门过多：${totalShots}`);
     assert.ok(totalShots >= 10, `${seed} 全场射门过少：${totalShots}`);
     assert.ok(engine.matchLog.match_event_log.length <= 240, `${seed} 关键事件过多：${engine.matchLog.match_event_log.length}`);
     assert.equal(eventCounts.pass_completed || 0, 0);

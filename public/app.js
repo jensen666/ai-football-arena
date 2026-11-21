@@ -1,10 +1,10 @@
-import { clearVisualEffects, cloneDrawState, drawPitch, drawReplayFrame, initPitchRenderer, mockState, queueVisualEffect } from "./pitchRenderer.js";
+import { clearVisualEffects, drawPitch, drawReplayFrame, initPitchRenderer, mockState, queueVisualEffect } from "./pitchRenderer.js";
+import { applyFrameToDrawState, createDrawStateCache, createStreamState, frameFromMotion, frameFromSnapshot, frameScalars, interpolateReplayFrames, latestFrame, pushFrame, sampleAt } from "./interpolation.js";
 
 const canvas = document.getElementById("pitchCanvas");
 const ui = collectUi();
 let config = null;
 let latest = null;
-let renderState = null;
 let socket = null;
 let socketVersion = 0;
 let reconnectTimer = null;
@@ -22,7 +22,15 @@ let frameTimes = [];
 const reducedMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 const COMMENTARY_LIMIT = 12;
 const FRAME_INTERVAL_MS = 1000 / 30;
-const replayState = { frames: [], frameIndex: 0, isPlaying: false, rafId: null, lastFrameTime: 0, baseTime: 0 };
+// 插值延迟：故意滞后 120ms 再显示，保证 nowMs - delay 落在已收到的两帧之间，网络抖动时不至于频繁外推。
+const INTERPOLATION_DELAY_MS = 120;
+let streamState = createStreamState();
+let streamMatchId = null;
+let uiDirty = false;
+let drawCache = null;
+let commentaryNodeById = new Map();
+let commentaryPlaceholder = null;
+const replayState = { frames: [], frameIndex: 0, isPlaying: false, rafId: null, baseTime: 0 };
 window.__footballArenaDebug = { fps, latestState: null, playerCount: 0, ballVisible: false, commentaryCount: 0, latestCommentary: null, visualEffectCount: 0 };
 initPitchRenderer(canvas, window.__footballArenaDebug);
 
@@ -104,7 +112,7 @@ async function loadCurrentMatch() {
     currentMatchId = latest.match_id;
     replaceCommentaryFeed(latest.recent_action_events || []);
     if (isMatchRunning()) connectWs(`/ws/match/${currentMatchId}`);
-    updateUi();
+    queueUiUpdate();
   } else {
     resetClientMatchState("服务已重启，当前没有正在运行的比赛。");
   }
@@ -113,7 +121,10 @@ async function loadCurrentMatch() {
 function resetClientMatchState(message = "当前没有正在运行的比赛。") {
   disconnectWs();
   latest = null;
-  renderState = null;
+  streamState = createStreamState();
+  streamMatchId = null;
+  drawCache = null;
+  uiDirty = false;
   currentMatchId = null;
   startingMatch = false;
   reportCache = null;
@@ -121,6 +132,7 @@ function resetClientMatchState(message = "当前没有正在运行的比赛。")
   pendingCoachDashboard = null;
   hidePreMatchOverlay();
   replaceCommentaryFeed([]);
+  renderCommentary();
   clearVisualEffects();
   resetCoachSummaryCache(null);
   updateConfigSummary();
@@ -241,22 +253,30 @@ async function startMatch() {
   }
 }
 
-/** 暂停或恢复比赛。 */
+/** 暂停或恢复比赛；失败（如 409 状态冲突）时写入报告状态，避免出现未处理的 Promise 拒绝。 */
 async function postControl(action) {
-  const data = await fetchJson(`/api/match/${action}`, { method: "POST", body: "{}" });
-  latest = data.match;
-  updateUi();
+  try {
+    const data = await fetchJson(`/api/match/${action}`, { method: "POST", body: "{}" });
+    latest = data.match;
+    queueUiUpdate();
+  } catch (error) {
+    ui.reportStatus.textContent = `操作失败：${error.message}`;
+  }
 }
 
-/** 停止比赛。 */
+/** 停止比赛；失败时保留当前界面和连接状态并提示错误。 */
 async function stopMatch() {
-  const data = await fetchJson("/api/match/stop", { method: "POST", body: "{}" });
-  latest = data.match;
-  reportCache = null;
-  mergeCommentaryEvents(latest.recent_action_events || []);
-  disconnectWs();
-  ui.reportStatus.textContent = "报告已生成：match_log.json、summary.md、report.md。";
-  updateUi();
+  try {
+    const data = await fetchJson("/api/match/stop", { method: "POST", body: "{}" });
+    latest = data.match;
+    reportCache = null;
+    mergeCommentaryEvents(latest.recent_action_events || []);
+    disconnectWs();
+    ui.reportStatus.textContent = "报告已生成：match_log.json、summary.md、report.md。";
+    queueUiUpdate();
+  } catch (error) {
+    ui.reportStatus.textContent = `停止比赛失败：${error.message}`;
+  }
 }
 
 /** 重新开始比赛：先停止当前比赛（生成报告），再使用最新配置开启新比赛。 */
@@ -291,16 +311,20 @@ async function restartMatch() {
   }
 }
 
-/** 打开报告。 */
+/** 打开报告；加载失败时提示到报告状态区，避免未处理的 Promise 拒绝。 */
 async function openReport() {
   if (!currentMatchId && !latest?.match_id) return;
   const matchId = currentMatchId || latest.match_id;
-  if (!reportCache) {
-    const data = await fetchJson(`/api/reports/${matchId}`);
-    reportCache = `${data.summary}\n\n---\n\n${data.report}`;
+  try {
+    if (!reportCache) {
+      const data = await fetchJson(`/api/reports/${matchId}`);
+      reportCache = `${data.summary}\n\n---\n\n${data.report}`;
+    }
+    ui.reportContent.textContent = reportCache;
+    openModal(ui.reportModal);
+  } catch (error) {
+    ui.reportStatus.textContent = `报告加载失败：${error.message}`;
   }
-  ui.reportContent.textContent = reportCache;
-  openModal(ui.reportModal);
 }
 
 /** 打开回放列表弹窗。 */
@@ -353,37 +377,39 @@ async function playReplay(replayId) {
   }
 }
 
-/** 开始按 30fps 顺序播放回放帧。 */
+/** 开始播放回放：以基准时间 + 每帧 1/30 秒的时间轴连续推进。 */
 function startReplayPlayback(frames) {
   stopReplayPlayback();
   replayState.frames = frames;
   replayState.frameIndex = 0;
   replayState.isPlaying = true;
-  replayState.lastFrameTime = 0;
-  replayState.baseTime = performance.now();
+  replayState.baseTime = 0;
   replayState.rafId = requestAnimationFrame(replayLoop);
 }
 
-/** 回放动画循环。 */
+/** 回放动画循环：按 30fps 帧时间轴在相邻两帧之间插值，避免逐帧跳变。 */
 function replayLoop(time) {
   if (!replayState.isPlaying) return;
-  if (!replayState.lastFrameTime) replayState.lastFrameTime = time;
-  if (time - replayState.lastFrameTime < FRAME_INTERVAL_MS) {
-    replayState.rafId = requestAnimationFrame(replayLoop);
-    return;
-  }
-  replayState.lastFrameTime = time;
-  if (replayState.frameIndex >= replayState.frames.length) {
+  if (!replayState.frames.length) {
     replayState.isPlaying = false;
     return;
   }
-  const frame = replayState.frames[replayState.frameIndex];
-  const frameTime = replayState.baseTime + replayState.frameIndex * FRAME_INTERVAL_MS;
-  drawReplayFrame(ui.replayCanvas, frame, frameTime);
-  replayState.frameIndex += 1;
-  if (replayState.frameIndex < replayState.frames.length) {
-    replayState.rafId = requestAnimationFrame(replayLoop);
+  if (!replayState.baseTime) replayState.baseTime = time;
+  const lastIndex = replayState.frames.length - 1;
+  const position = (time - replayState.baseTime) / FRAME_INTERVAL_MS;
+  const index = Math.min(lastIndex, Math.floor(position));
+  const alpha = Math.min(1, Math.max(0, position - index));
+  replayState.frameIndex = index;
+  const from = replayState.frames[index];
+  const to = replayState.frames[index + 1];
+  // prefers-reduced-motion 时不做插值，直接画当前最近的回放帧。
+  const frame = !to || reducedMotionQuery?.matches ? from : interpolateReplayFrames(from, to, alpha);
+  drawReplayFrame(ui.replayCanvas, frame, time);
+  if (index >= lastIndex) {
+    replayState.isPlaying = false;
+    return;
   }
+  replayState.rafId = requestAnimationFrame(replayLoop);
 }
 
 /** 停止回放动画。 */
@@ -418,26 +444,70 @@ function connectWs(url) {
   if (socket) socket.close();
   const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${url}`;
   socket = new WebSocket(wsUrl);
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.match_id) currentMatchId = message.match_id;
-    if (message.payload?.teams?.home && message.payload?.teams?.away) {
-      startingMatch = false;
-      latest = message.payload;
-      if (pendingCoachDashboard && !latest.coach_dashboard) latest.coach_dashboard = pendingCoachDashboard;
-      pendingCoachDashboard = null;
-      mergeCommentaryEvents(latest.recent_action_events || []);
-    } else if (message.type === "commentary") {
-      appendCommentary(message.payload);
-    } else if (message.type === "coach") {
-      if (latest) latest = { ...latest, coach_dashboard: message.payload };
-      else pendingCoachDashboard = message.payload;
-    }
-    updateUi();
-  });
+  socket.addEventListener("message", (event) => handleSocketMessage(JSON.parse(event.data)));
   socket.addEventListener("close", () => {
     handleSocketClose(version);
   });
+}
+
+/** 处理 WebSocket 消息：motion 走动帧缓冲与标量更新，全量快照/事件类消息触发 UI 合批刷新。 */
+function handleSocketMessage(message) {
+  if (message.match_id) currentMatchId = message.match_id;
+  if (!message.payload) return;
+  const receivedAt = performance.now();
+  if (message.type === "motion") {
+    handleMotionMessage(message.payload, receivedAt);
+    return;
+  }
+  if (message.payload.teams?.home && message.payload.teams?.away) {
+    startingMatch = false;
+    latest = message.payload;
+    if (pendingCoachDashboard && !latest.coach_dashboard) latest.coach_dashboard = pendingCoachDashboard;
+    pendingCoachDashboard = null;
+    mergeCommentaryEvents(latest.recent_action_events || []);
+    resetStreamForMatch(latest.match_id);
+    pushFrame(streamState, frameFromSnapshot(latest), receivedAt);
+    queueUiUpdate();
+    return;
+  }
+  if (message.type === "commentary") appendCommentary(message.payload);
+  else if (message.type === "coach") {
+    if (latest) latest = { ...latest, coach_dashboard: message.payload };
+    else pendingCoachDashboard = message.payload;
+  }
+  queueUiUpdate();
+}
+
+/** 处理 10Hz 动帧：写入缓冲、只覆盖 latest 的标量字段并刷新比分/时钟文本，不做全量 UI 刷新。 */
+function handleMotionMessage(payload, receivedAt) {
+  if (!latest) return;
+  const frame = frameFromMotion(payload);
+  if (!frame) return;
+  pushFrame(streamState, frame, receivedAt);
+  Object.assign(latest, frameScalars(frame));
+  refreshScoreboardText();
+}
+
+/** 快照切换比赛时清空动帧缓冲，避免旧比赛帧参与插值。 */
+function resetStreamForMatch(matchId = null) {
+  if (streamMatchId === matchId) return;
+  streamMatchId = matchId;
+  streamState = createStreamState();
+  drawCache = null;
+}
+
+/** 只更新比分与时钟状态文本，值变化时才写 DOM（10Hz 动帧专用，避免整块 UI 刷新）。 */
+function refreshScoreboardText() {
+  if (!latest) return;
+  writeTextIfChanged(ui.homeScore, String(latest.score?.home ?? 0));
+  writeTextIfChanged(ui.awayScore, String(latest.score?.away ?? 0));
+  writeTextIfChanged(ui.matchTime, clockText(latest.clock, latest));
+  writeTextIfChanged(ui.matchState, clockStatusText(latest));
+}
+
+/** 文本变化时才写 textContent。 */
+function writeTextIfChanged(element, text) {
+  if (element && element.textContent !== text) element.textContent = text;
 }
 
 async function handleSocketClose(version) {
@@ -451,7 +521,11 @@ async function handleSocketClose(version) {
     }
     latest = data.match;
     currentMatchId = latest.match_id;
-    updateUi();
+    // 断开期间动帧时间轴已中断，重连后的首帧快照会重新填充缓冲，避免旧帧参与插值造成回跳。
+    streamState = createStreamState();
+    streamMatchId = null;
+    drawCache = null;
+    queueUiUpdate();
   } catch {
     if (version !== socketVersion) return;
   }
@@ -468,9 +542,14 @@ function disconnectWs() {
   clearPreMatchTimer();
 }
 
+/** 标记 UI 需要刷新：真正的 updateUi 在 drawLoop 里每帧最多执行一次，避免消息洪泛导致重复重建 DOM。 */
+function queueUiUpdate() {
+  uiDirty = true;
+}
+
 /** 根据最新状态刷新界面。 */
 function updateUi() {
-  if (!latest) return;
+  if (!latest?.teams?.home || !latest?.teams?.away) return;
   ui.homeName.textContent = latest.teams.home.name;
   ui.awayName.textContent = latest.teams.away.name;
   ui.homeScore.textContent = latest.score.home;
@@ -530,11 +609,57 @@ function renderStats(state) {
   ui.matchStats.innerHTML = [statLine("射门", home.shots, away.shots), statLine("xG", home.xG.toFixed(2), away.xG.toFixed(2)), statLine("传球", home.passes, away.passes), statLine("犯规", home.fouls, away.fouls)].join("");
 }
 
-/** 渲染实时播报。 */
+/** 渲染实时播报：append-only 维护节点（最多 COMMENTARY_LIMIT 条、最新在顶部），不再整体重建 innerHTML。 */
 function renderCommentary() {
   const items = commentaryFeed.slice(-COMMENTARY_LIMIT).reverse();
-  ui.commentaryFeed.innerHTML = items.map((item, index) => `<div class="commentary-item ${index === 0 ? "latest" : ""}"><strong>${formatClock(item.game_time)}</strong><span>${escapeHtml(item.commentary || item.description || "比赛继续进行。")}</span></div>`).join("") || "<div class=\"commentary-item\"><strong>--:--</strong><span>等待实时播报</span></div>";
-  ui.commentaryFeed.scrollTop = 0;
+  const ids = items.map((item) => item.action_event_id);
+  // 移除已滑出窗口的节点，只保留当前可见条目。
+  for (const [id, node] of commentaryNodeById) {
+    if (ids.includes(id)) continue;
+    node.remove();
+    commentaryNodeById.delete(id);
+  }
+  if (!items.length) {
+    ensureCommentaryPlaceholder();
+    return;
+  }
+  if (commentaryPlaceholder) {
+    commentaryPlaceholder.remove();
+    commentaryPlaceholder = null;
+  }
+  // 用户已向下滚动时不再强行回顶，避免打断阅读。
+  const pinnedTop = ui.commentaryFeed.scrollTop <= 4;
+  items.forEach((item, index) => {
+    const timeText = formatClock(item.game_time);
+    const bodyText = item.commentary || item.description || "比赛继续进行。";
+    let node = commentaryNodeById.get(item.action_event_id);
+    if (!node) {
+      node = document.createElement("div");
+      node.dataset.eventId = item.action_event_id;
+      node.innerHTML = "<strong></strong><span></span>";
+      commentaryNodeById.set(item.action_event_id, node);
+    }
+    node.className = `commentary-item ${index === 0 ? "latest" : ""}`;
+    if (node.firstChild.textContent !== timeText) node.firstChild.textContent = timeText;
+    if (node.lastChild.textContent !== bodyText) node.lastChild.textContent = bodyText;
+  });
+  // 常规情况下只有一条新播报：直接插到顶部；只有历史合并导致顺序错乱时才整体重排。
+  const domIds = [...ui.commentaryFeed.children].map((node) => node.dataset.eventId);
+  if (domIds.join("|") !== ids.join("|")) {
+    const appendOnly = domIds.length === ids.length - 1 && domIds.every((id, index) => id === ids[index + 1]);
+    if (appendOnly) ui.commentaryFeed.insertBefore(commentaryNodeById.get(ids[0]), ui.commentaryFeed.firstChild);
+    else for (let index = ids.length - 1; index >= 0; index -= 1) ui.commentaryFeed.insertBefore(commentaryNodeById.get(ids[index]), ui.commentaryFeed.firstChild);
+  }
+  if (pinnedTop) ui.commentaryFeed.scrollTop = 0;
+}
+
+/** 播报为空时展示占位条目（结构与真实条目保持一致，保持 aria-live 区域有内容）。 */
+function ensureCommentaryPlaceholder() {
+  if (commentaryPlaceholder) return;
+  commentaryPlaceholder = document.createElement("div");
+  commentaryPlaceholder.className = "commentary-item";
+  commentaryPlaceholder.innerHTML = "<strong>--:--</strong><span>等待实时播报</span>";
+  ui.commentaryFeed.appendChild(commentaryPlaceholder);
 }
 
 /** 渲染关键事件。 */
@@ -542,40 +667,28 @@ function renderEvents(events) {
   ui.eventTimeline.innerHTML = events.slice(-4).map((event) => `<div class="event"><strong>${formatMinute(event.game_time)}</strong>${escapeHtml(event.description)}</div>`).join("") || "<div class=\"event\"><strong>--</strong>等待比赛事件</div>";
 }
 
-/** 绘制循环。 */
+/** 绘制循环：每帧最多合批执行一次 UI 刷新，然后用动帧插值坐标绘制球场。 */
 function drawLoop(time) {
   updateFps(time);
-  drawPitch(smoothDrawState(latest), time);
+  if (uiDirty) {
+    uiDirty = false;
+    updateUi();
+  }
+  drawPitch(composeDrawState(time), time);
   requestAnimationFrame(drawLoop);
 }
 
-/** 平滑服务器快照之间的球员和足球坐标。
- * 对球员加入小位移死区，抑制 weave 等引擎微幅抖动在画面上的左右/前后晃动；
- * 足球保持原有平滑，确保传球、射门轨迹连续。
+/** 组合本帧绘制状态：以 latest 为模板，用动帧插值坐标覆盖球员/球（缓存与覆盖逻辑在 interpolation.js）。
+ * prefers-reduced-motion 时不做插值，直接取最新动帧坐标；正常路径按 now-delay 的时间轴插值。
  */
-function smoothDrawState(state) {
-  const source = state || mockState();
-  const alpha = reducedMotionQuery?.matches ? 1 : 0.3;
-  const positionDeadzone = 0.18; // 球场百分比坐标，约 1.5~2 px
-  if (!renderState || renderState.match_id !== source.match_id) renderState = cloneDrawState(source);
-  for (const side of ["home", "away"]) {
-    const previous = new Map(renderState.teams[side].players.map((player) => [player.id, player]));
-    renderState.teams[side] = { ...source.teams[side], players: source.teams[side].players.map((player) => {
-      const last = previous.get(player.id) || player;
-      let dx = player.x - last.x;
-      let dy = player.y - last.y;
-      const delta = Math.hypot(dx, dy);
-      // 软死区：delta 较小时按比例压低位移，避免静止球员反复微移；
-      // delta 较大时正常平滑，不影响真实跑动。
-      const scale = delta <= positionDeadzone ? 0 : Math.min(1, (delta - positionDeadzone) / delta);
-      return { ...player, x: last.x + dx * alpha * scale, y: last.y + dy * alpha * scale };
-    }) };
-  }
-  if (source.ball) {
-    const lastBall = renderState.ball || source.ball;
-    renderState.ball = { ...source.ball, x: lastBall.x + (source.ball.x - lastBall.x) * alpha, y: lastBall.y + (source.ball.y - lastBall.y) * alpha };
-  }
-  return { ...source, teams: renderState.teams, ball: renderState.ball };
+function composeDrawState(time) {
+  const template = latest || mockState();
+  const frame = reducedMotionQuery?.matches ? latestFrame(streamState) : sampleAt(streamState, time, INTERPOLATION_DELAY_MS);
+  if (!frame) return template;
+  drawCache = applyFrameToDrawState(createDrawStateCache(template, drawCache), frame);
+  window.__footballArenaDebug.streamFrames = streamState.frames.length;
+  window.__footballArenaDebug.streamTick = frame.tick;
+  return drawCache.state;
 }
 
 /** 构造设置表单配置。 */

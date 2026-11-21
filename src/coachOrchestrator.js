@@ -4,6 +4,8 @@ import { TICKS_PER_SECOND, redactSensitive } from "./utils.js";
 
 export const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_DECISION_INTERVAL_TICKS = TICKS_PER_SECOND * 15;
+// 事件触发的最小间隔：本地规则教练毫秒级返回，若不节流会形成“事件→决策→战术事件”的自激循环。
+const EVENT_TRIGGER_INTERVAL_TICKS = 30;
 
 /** 大模型教练连续调度器。 */
 export class CoachOrchestrator {
@@ -52,7 +54,10 @@ export class CoachOrchestrator {
         this.timeoutRequest(side);
         continue;
       }
-      if (this.engine.pendingEvents[side].length) this.scheduleIfNeeded(side, "event");
+      // 事件触发按 30 tick 节流，保证周期决策与半场决策不会被高频事件请求长期抢占。
+      const hasPendingEvents = this.engine.pendingEvents[side].length > 0;
+      const eventTriggerReady = hasPendingEvents && this.engine.tick - state.lastRequestTick >= EVENT_TRIGGER_INTERVAL_TICKS;
+      if (eventTriggerReady) this.scheduleIfNeeded(side, "event");
       else if (this.engine.state === "half_time" && state.lastHalfTimePeriod !== this.engine.period) this.scheduleIfNeeded(side, "half_time");
       else if (this.shouldRequestPeriodicDecision(side)) this.scheduleIfNeeded(side, "periodic");
     }
@@ -389,7 +394,8 @@ function coachMessages(coach, input) {
 }
 
 export function usesChatCompletions(coach = {}) {
-  return ["deepseek", "openai", "glm", "mimo"].includes(String(coach.provider || "").toLowerCase()) || /chat\/completions/i.test(resolveChatEndpoint(coach));
+  // 只要配置了 endpoint 就按 OpenAI 兼容的 chat/completions messages 格式发送；未配置 endpoint 即走本地规则教练。
+  return Boolean(resolveChatEndpoint(coach));
 }
 
 /** 判断模型接口是否支持强制 JSON 响应。 */

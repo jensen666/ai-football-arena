@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { MatchController } from "./matchController.js";
 import { WebSocketHub } from "./ws.js";
@@ -8,6 +8,8 @@ import { redactSensitive } from "./utils.js";
 
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const MAX_BODY_BYTES = 1_048_576;
+// 报告接口附带对局日志时的上限，避免把整份大日志塞进响应拖垮服务。
+const MAX_REPORT_LOG_BYTES = 2 * 1024 * 1024;
 
 /** 创建本地 HTTP 服务。 */
 export function createServer() {
@@ -22,7 +24,8 @@ export function createServer() {
     }
   });
   server.on("upgrade", (request, socket, head) => wsHub.handleUpgrade(request, socket, head, (matchId) => {
-    const current = controller.current();
+    // 首帧绕过 broadcast，这里取已脱敏快照，保证与广播链路同样的脱敏强度。
+    const current = controller.currentSafePayload();
     return current?.match_id === matchId ? current : null;
   }));
   controller.init().catch((error) => console.error("配置初始化失败", error));
@@ -54,16 +57,33 @@ async function routeApi(request, response, controller, url) {
     if (!replay) return sendJson(response, 404, { ok: false, error: { code: "replay_not_found", message: "回放片段不存在" } });
     return sendJson(response, 200, { ok: true, replay });
   }
-  if (request.method === "GET" && url.pathname.startsWith("/api/reports/")) return await sendReport(response, url.pathname.split("/").pop());
+  if (request.method === "GET" && url.pathname.startsWith("/api/reports/")) return await sendReport(response, url.pathname.split("/").pop(), url.searchParams.get("include_log") === "1");
   sendJson(response, 404, { ok: false, error: { code: "not_found", message: "接口不存在" } });
 }
 
-/** 发送报告。 */
-async function sendReport(response, matchId) {
+/** 发送报告：默认只返回 summary/report，?include_log=1 时才附带日志且限制最大 2MB。 */
+async function sendReport(response, matchId, includeLog = false) {
   const paths = matchPaths(matchId);
   try {
-    const [summary, report, log] = await Promise.all([readFile(paths.summary, "utf8"), readFile(paths.report, "utf8"), readJson(paths.matchLog)]);
-    sendJson(response, 200, { ok: true, match_id: matchId, summary, report, log: redactSensitive(log) });
+    const [summary, report] = await Promise.all([readFile(paths.summary, "utf8"), readFile(paths.report, "utf8")]);
+    const data = { ok: true, match_id: matchId, summary, report };
+    if (includeLog) {
+      const logStat = await stat(paths.matchLog).catch(() => null);
+      if (!logStat) {
+        data.log = null;
+        data.log_missing = true;
+      } else if (logStat.size > MAX_REPORT_LOG_BYTES) {
+        // 超过 2MB 不读入内存，只返回截断标记与原始大小。
+        data.log = null;
+        data.log_truncated = true;
+        data.log_bytes = logStat.size;
+      } else {
+        // 日志解析失败不影响报告主体，按缺失处理即可。
+        data.log = await readJson(paths.matchLog).then((log) => redactSensitive(log)).catch(() => null);
+        if (data.log === null) data.log_missing = true;
+      }
+    }
+    sendJson(response, 200, data);
   } catch {
     sendJson(response, 404, { ok: false, error: { code: "report_not_found", message: "报告尚未生成" } });
   }

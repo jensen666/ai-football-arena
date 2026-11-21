@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { CoachOrchestrator, extractModelIds, resolveChatEndpoint, resolveModelsEndpoint } from "../src/coachOrchestrator.js";
+import { CoachOrchestrator, createCoachRequestBody, extractModelIds, resolveChatEndpoint, resolveModelsEndpoint, usesChatCompletions } from "../src/coachOrchestrator.js";
 import { MatchEngine } from "../src/matchEngine.js";
 import { MatchController } from "../src/matchController.js";
 import { createRng } from "../src/utils.js";
@@ -76,6 +76,34 @@ test("callCoach 在无 endpoint 时走规则教练且不调用 fetch", async () 
   } finally {
     restore();
   }
+});
+
+test("usesChatCompletions 只看 endpoint：自定义 provider 也按 messages 格式发请求", async () => {
+  const { calls, restore } = withMockFetch(() => ({ ok: true, json: async () => ({ choices: [{ message: { content: "{}" } }] }) }));
+  try {
+    const config = { homeCoach: { provider: "custom", model: "custom-model", endpoint: "https://api.example.com/v1", api_key: "sk-test-custom" }, awayCoach: { provider: "custom", model: "custom-model", endpoint: "https://api.example.com/v1", api_key: "sk-test-custom" }, match: { seed: "custom-routing" } };
+    const engine = new MatchEngine(config, createRng("custom-routing"));
+    engine.start();
+    const orchestrator = new CoachOrchestrator(engine, config);
+    await orchestrator.callCoach("home", { summary: {} }, new AbortController().signal);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.example.com/v1/chat/completions");
+    const body = JSON.parse(calls[0].options.body);
+    assert.ok(Array.isArray(body.messages), "配置了 endpoint 就应按 chat/completions messages 格式发送");
+    assert.equal("input" in body, false, "不应再发送旧版 input 请求体");
+  } finally {
+    restore();
+  }
+});
+
+test("usesChatCompletions 与 createCoachRequestBody 以 endpoint 为准", () => {
+  assert.equal(usesChatCompletions({ provider: "deepseek", model: "x" }), false, "无 endpoint 时走规则教练，不按 chat 格式");
+  assert.equal(usesChatCompletions({ provider: "custom", model: "x", endpoint: "https://api.example.com/v1" }), true);
+  assert.equal(usesChatCompletions({ provider: "custom", model: "x", endpoint: "https://api.example.com/v1/chat/completions" }), true);
+  const body = createCoachRequestBody({ provider: "custom", model: "custom-model", endpoint: "https://api.example.com/v1" }, { summary: { side: "home" } });
+  assert.equal(body.model, "custom-model");
+  assert.ok(Array.isArray(body.messages));
+  assert.equal("input" in body, false);
 });
 
 test("updateConfig 运行时热更新进行中比赛的 orchestrator 配置", async () => {

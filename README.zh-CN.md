@@ -12,6 +12,8 @@ AI Football Arena 是一个本地运行的 11v11 足球比赛模拟器。两个 
 
 - 11v11 实时比赛模拟：支持控球、传球、射门、抢断、犯规、红黄牌、换人、定位球和赛后报告。
 - Canvas 2D 球场：展示球员、足球移动、比分、计时器、阵型、实时播报和关键事件。
+- 平滑球场动画：服务端以 10Hz 推送轻量动帧，浏览器保存约 120ms 回放缓冲并按时间戳插值球员/足球位置，运动跟随屏幕刷新率而不是每次快照跳一步；球员步频与朝向跟随插值速度。
+- 高分屏适配：球场画布后备尺寸跟随显示尺寸与 devicePixelRatio，静态球场离屏缓存，球员/足球阴影改为预渲染贴图而非逐个模糊。
 - 进球回放：点击比分牌客队名旁的「回放」按钮，可查看本场进球列表；选择任意进球，将在独立弹窗中自动播放进球前 10 秒 + 进球后 3 秒的画面。测试时可在设置中调低「进球节奏倍率」来加快进球。
 - 模型教练循环：校验战术 JSON，显示战术摘要、风险标签、请求状态和模型延迟。
 - 赛前 loading 反馈：开球前双方教练向大模型请求首回合战术时，球场画布上会显示"双方教练正在制定战术"覆盖层，并基于请求开始时间本地实时跳动耗时，开球后自动隐藏，避免赛前等待期界面像卡死；模型状态文案中文化（如"制定战术中""校验战术中""战术已就绪"）。
@@ -117,7 +119,9 @@ env:OPENAI_API_KEY
 ```text
 public/                 浏览器界面
   app.js                UI 状态、API 和 WebSocket 流程
+  interpolation.js      动帧缓冲与时间戳插值
   pitchRenderer.js      Canvas 球场渲染
+  playerPose.js         速度驱动的步频、朝向与动作姿态
   styles.css            页面样式
 src/                    运行时和比赛引擎
   engine/movement.js    球员移动和站位逻辑
@@ -143,7 +147,8 @@ docs/assets/            README 图片和 GIF
 - `POST /api/match/stop`
 - `POST /api/match/restart` — 停止当前比赛（生成报告）并用最新配置开启新比赛，返回新 `match_id` 与 `restarted_from`（旧 `match_id`，无旧比赛时为 `null`）。
 - `GET /api/match/current`
-- `GET /api/reports/{match_id}`
+- `GET /api/match/replay/{replay_id}` — 返回一段已录制的进球回放（帧率 30Hz，包含进球前 10 秒与进球后 3 秒）。
+- `GET /api/reports/{match_id}` — 返回 `{match_id, summary, report}`；加 `?include_log=1` 才附带完整比赛日志（超过 2MB 会截断并返回 `log_truncated`）。
 
 ## WebSocket
 
@@ -151,7 +156,15 @@ docs/assets/            README 图片和 GIF
 WS /ws/match/{match_id}
 ```
 
-WebSocket 会推送比赛快照、tick、事件、实时播报、教练决策、报告和错误。消息设计上不会暴露明文 API Key 或本机敏感路径。
+消息类型：
+
+- `motion` — 10Hz 轻量位置流（`tick`、`state`、`score`、`clock`、`ball`、`players[{team_id,id,x,y,vx,vy}]`），供客户端插值。
+- `snapshot` — 1Hz 及每次状态切换时的全量快照（球队、战术、统计、最近事件、教练看板、回放列表）。
+- `event` / `commentary` — 比赛事件与实时播报。
+- `coach` — 教练看板更新（同内容去重，最高 4Hz）。
+- `report` — 赛后报告可用时推送。
+
+消息设计上不会暴露明文 API Key 或本机敏感路径。
 
 ## 许可证
 

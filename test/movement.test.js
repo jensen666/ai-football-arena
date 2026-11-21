@@ -77,3 +77,68 @@ test("客队持球人接球后向 -x 方向带球推进", () => {
   const targetAfter = holder.targetX;
   assert.ok(targetAfter < targetAtStart, `客队持球人应向 -x 推进，start=${targetAtStart}, after=${targetAfter}`);
 });
+
+/** 引擎输出的 vx/vy 必须等于本 tick 的实际坐标差，且全部为有限数值。 */
+test("球员 vx/vy 等于本 tick 实际位移且无非法值", () => {
+  const engine = setup("movement-velocity-field-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "home";
+  const holder = engine.teams.home.players.find((player) => player.position === "ST" && player.onField);
+  engine.ball = { x: holder.x, y: holder.y, vx: 0, vy: 0, holderTeam: "home", holderId: holder.id };
+  engine.updateDynamicTargets();
+  const before = new Map(engine.teams.home.players.filter((player) => player.onField).map((player) => [player.id, { x: player.x, y: player.y }]));
+  engine.updatePlayers();
+  for (const player of engine.teams.home.players.filter((item) => item.onField)) {
+    const start = before.get(player.id);
+    assert.ok(Number.isFinite(player.vx) && Number.isFinite(player.vy), `${player.id} 号球员 vx/vy 出现非法值`);
+    assert.ok(Math.abs(player.vx - (player.x - start.x)) < 1e-9, `${player.id} 号球员 vx 与实际位移不一致`);
+    assert.ok(Math.abs(player.vy - (player.y - start.y)) < 1e-9, `${player.id} 号球员 vy 与实际位移不一致`);
+  }
+});
+
+/** 球员速度标量每 tick 变化不能超过减速上限 0.05，且不能出现 NaN。 */
+test("球员 speed 每 tick 变化不超过 0.05 且无 NaN", () => {
+  const engine = setup("movement-speed-acceleration-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "away";
+  const holder = engine.teams.away.players.find((player) => player.position === "ST" && player.onField);
+  engine.ball = { x: holder.x, y: holder.y, vx: 0, vy: 0, holderTeam: "away", holderId: holder.id };
+  for (let tickIndex = 0; tickIndex < 120; tickIndex += 1) {
+    engine.updateDynamicTargets();
+    const before = new Map(engine.teams.home.players.filter((player) => player.onField).map((player) => [player.id, player.speed]));
+    engine.updatePlayers();
+    for (const player of engine.teams.home.players.filter((item) => item.onField)) {
+      assert.ok(Number.isFinite(player.speed), `${player.id} 号球员 speed 出现 NaN`);
+      assert.ok(Number.isFinite(player.vx) && Number.isFinite(player.vy), `${player.id} 号球员 vx/vy 出现 NaN`);
+      assert.ok(Math.abs(player.speed - before.get(player.id)) <= 0.0500001, `${player.id} 号球员 speed 单 tick 变化过大：${before.get(player.id)} -> ${player.speed}`);
+    }
+  }
+});
+
+/** 从静止启动时首 tick 位移受加速度限制，不会瞬间满速。 */
+test("静止球员启动不会瞬间满速", () => {
+  const engine = setup("movement-startup-acceleration-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "home";
+  const runner = engine.teams.home.players.find((player) => player.position === "CM" && player.onField);
+  engine.ball = { x: runner.x, y: runner.y, vx: 0, vy: 0, holderTeam: "home", holderId: runner.id };
+  runner.targetX = 96;
+  runner.targetY = 50;
+  runner.speed = 0;
+  const before = { x: runner.x, y: runner.y };
+  engine.updatePlayers();
+  const step = Math.hypot(runner.x - before.x, runner.y - before.y);
+  assert.ok(step <= 0.0251, `静止球员首 tick 位移应受加速度限制：${step}`);
+  assert.ok(runner.speed <= 0.0251, `首 tick 速度应受加速度限制：${runner.speed}`);
+});
+
+/** 开球归位必须清零上一 tick 的位移速度，避免渲染残留抖动。 */
+test("开球归位会清零球员 vx/vy", () => {
+  const engine = setup("movement-kickoff-reset-test");
+  const player = engine.teams.home.players.find((item) => item.onField);
+  player.vx = 3;
+  player.vy = -2;
+  engine.enterKickoff("home");
+  assert.equal(player.vx, 0);
+  assert.equal(player.vy, 0);
+});

@@ -178,11 +178,21 @@ test("传球失败后由离球最近的对手接管", () => {
     .filter((player) => player.onField && !player.sentOff)
     .reduce((nearest, player) => (Math.hypot(player.x - engine.ball.x, player.y - engine.ball.y) < Math.hypot(nearest.x - engine.ball.x, nearest.y - engine.ball.y) ? player : nearest));
   const values = [0, 1];
-  engine.rng = { seed: "nearest-turnover", next: () => values.shift() ?? 0 };
+  engine.rng = { seed: "nearest-turnover", next: () => values.shift() ?? 1 };
   engine.simulatePass();
+  // 拦截新行为：传球瞬间不切球权，球先飞向拦截点，到达后才由对手接管。
+  assert.equal(engine.possessionTeam, "home", "球未到达拦截点前不应切换球权");
+  assert.equal(engine.pendingInterception?.teamId, "away");
+  assert.equal(engine.ball.inFlight, true);
+  for (let index = 0; index < 240 && engine.pendingInterception; index += 1) {
+    engine.updateDynamicTargets();
+    engine.updatePlayers();
+  }
+  assert.equal(engine.pendingInterception, null);
   assert.equal(engine.possessionTeam, "away");
   assert.equal(engine.ball.holderTeam, "away");
   assert.equal(engine.ball.holderId, expected.id);
+  assert.equal(engine.ball.inFlight, null);
 });
 
 test("比赛会形成前场推进和射门", () => {
@@ -310,4 +320,114 @@ test("足球未到射门人脚下时不会射门", () => {
   engine.ball = { x: 60, y: 50, vx: 0, vy: 0, holderTeam: "home", holderId: shooter.id };
   engine.simulateShot();
   assert.equal(engine.matchLog.match_event_log.some((event) => event.event_type === "shot" || event.event_type === "goal"), false);
+});
+
+/** 射偏/被扑出也必须走飞行时间轴：先按 flightSpeed 飞出，到达出界点后才切定位球。 */
+test("射偏后足球先飞向出界点再切换到球门球", () => {
+  const engine = createEngine("shot-miss-flight-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "home";
+  const shooter = engine.teams.home.players.find((player) => player.position === "ST" && player.onField);
+  shooter.x = 88;
+  shooter.y = 50;
+  shooter.stamina = 80;
+  engine.ball = { x: shooter.x, y: shooter.y, vx: 0, vy: 0, holderTeam: "home", holderId: shooter.id };
+  const values = [0.99, 0.99];
+  engine.rng = { seed: "shot-miss-flight", next: () => values.shift() ?? 0.99 };
+  engine.simulateShot();
+  assert.equal(engine.ball.inFlight, true);
+  assert.equal(engine.ball.flightSpeed, 2.2);
+  assert.equal(engine.ball.flightKind, "shot");
+  assert.equal(engine.ball.flightStartX, shooter.x);
+  assert.ok(engine.ball.flightEndX > shooter.x, `射偏球路仍应飞向球门方向：${engine.ball.flightEndX}`);
+  assert.equal(engine.state, "in_play", "射门瞬间不应立即切定位球状态");
+  assert.equal(engine.pendingRestart?.restart, "goal_kick");
+  assert.equal(engine.ball.holderId, null, "射门后足球不再属于任何持球人");
+  const before = { x: engine.ball.x, y: engine.ball.y };
+  engine.updatePlayers();
+  const firstStep = Math.hypot(engine.ball.x - before.x, engine.ball.y - before.y);
+  assert.ok(firstStep > 2 && firstStep <= 2.2 + 1e-9, `射门飞行单 tick 位移应接近 flightSpeed：${firstStep}`);
+  for (let index = 0; index < 120 && engine.pendingRestart; index += 1) {
+    engine.updateDynamicTargets();
+    engine.updatePlayers();
+  }
+  assert.equal(engine.pendingRestart, null);
+  assert.ok(["goal_kick", "corner_kick"].includes(engine.state), `球到出界点后应切定位球，实际 ${engine.state}`);
+  assert.equal(engine.ball.inFlight, null, "定位球重启后应结束飞行状态");
+});
+
+/** 拦截同理：球按 1.0 的飞行速度飞向拦截点，到达后才切换球权。 */
+test("传球被拦截后球飞向拦截点并延迟切换球权", () => {
+  const engine = createEngine("interception-flight-delay-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "home";
+  const holder = engine.teams.home.players.find((player) => player.position === "CM" && player.onField);
+  engine.ball = { x: holder.x, y: holder.y, vx: 0, vy: 0, holderTeam: "home", holderId: holder.id };
+  const values = [0, 1];
+  engine.rng = { seed: "interception-flight-delay", next: () => values.shift() ?? 1 };
+  engine.simulatePass();
+  assert.equal(engine.possessionTeam, "home", "传球瞬间不应切换球权");
+  assert.ok(engine.pendingInterception, "应有待结算的拦截");
+  assert.equal(engine.pendingInterception.teamId, "away");
+  assert.equal(engine.ball.flightSpeed, 1.0);
+  assert.equal(engine.ball.inFlight, true);
+  const target = { x: engine.pendingInterception.targetX, y: engine.pendingInterception.targetY };
+  const gapBefore = Math.hypot(target.x - engine.ball.x, target.y - engine.ball.y);
+  const before = { x: engine.ball.x, y: engine.ball.y };
+  engine.updatePlayers();
+  const firstStep = Math.hypot(engine.ball.x - before.x, engine.ball.y - before.y);
+  assert.ok(Math.abs(firstStep - Math.min(gapBefore, 1.0)) < 1e-9, `拦截飞行单 tick 位移应为 min(距离, flightSpeed)：${firstStep}`);
+  for (let index = 0; index < 240 && engine.pendingInterception; index += 1) {
+    engine.updateDynamicTargets();
+    engine.updatePlayers();
+  }
+  assert.equal(engine.pendingInterception, null);
+  assert.equal(engine.possessionTeam, "away");
+  assert.equal(engine.ball.holderTeam, "away");
+  assert.equal(engine.ball.inFlight, null);
+});
+
+/** 进球后球速 2.0，且 goal_scored 状态从 3 秒延长到 5 秒。 */
+test("进球后球速为 2.0 且庆祝状态持续 5 秒", () => {
+  const engine = createEngine("goal-scored-duration-test");
+  engine.changeState("in_play");
+  engine.possessionTeam = "home";
+  const shooter = engine.teams.home.players.find((player) => player.position === "ST" && player.onField);
+  shooter.x = 88;
+  shooter.y = 50;
+  shooter.stamina = 80;
+  engine.ball = { x: shooter.x, y: shooter.y, vx: 0, vy: 0, holderTeam: "home", holderId: shooter.id };
+  const values = [0.001, 0.9, 0.99];
+  engine.rng = { seed: "goal-scored-duration", next: () => values.shift() ?? 0.99 };
+  engine.simulateShot();
+  assert.equal(engine.teams.home.score, 1);
+  assert.equal(engine.state, "goal_scored");
+  assert.equal(engine.ball.flightSpeed, 2.0);
+  assert.equal(engine.ball.inFlight, true);
+  for (let index = 0; index < TICKS_PER_SECOND * 5 - 1; index += 1) engine.advanceTick();
+  assert.equal(engine.state, "goal_scored", "进球状态应持续 5 秒");
+  engine.advanceTick();
+  assert.equal(engine.state, "kickoff", "5 秒后应由失球方中圈开球");
+  assert.equal(engine.possessionTeam, "away");
+});
+
+/** 动帧只含运动必需字段，players 为 22 名场上球员且速度字段完整。 */
+test("motionFrame 返回 22 名球员且字段齐全", () => {
+  const engine = createEngine("motion-frame-test");
+  for (let index = 0; index < 15; index += 1) engine.advanceTick();
+  const frame = engine.motionFrame();
+  for (const key of ["match_id", "tick", "state", "paused", "game_time", "display_time", "period_label", "period_display_time", "period_total_display_time", "score", "ball", "players"]) {
+    assert.ok(key in frame, `动帧缺少字段 ${key}`);
+  }
+  assert.equal(frame.tick, 15);
+  assert.equal(frame.players.length, 22);
+  for (const player of frame.players) {
+    assert.ok(["home", "away"].includes(player.team_id), `动帧球队标识非法：${player.team_id}`);
+    assert.ok(Number.isFinite(player.id));
+    for (const key of ["x", "y", "vx", "vy"]) {
+      assert.ok(Number.isFinite(player[key]), `${player.team_id}-${player.id} 动帧字段 ${key} 非数值：${player[key]}`);
+    }
+  }
+  for (const key of ["x", "y", "holderTeam", "holderId", "inFlight", "flightKind"]) assert.ok(key in frame.ball, `动帧 ball 缺少字段 ${key}`);
+  assert.deepEqual(frame.score, { home: 0, away: 0 });
 });
